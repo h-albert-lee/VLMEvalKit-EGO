@@ -196,20 +196,47 @@ class EgoOwnershipBench(ImageBaseDataset):
 
         # Resolve frame paths once at load time (only configs with frames).
         if self._has_frames:
+            from concurrent.futures import ThreadPoolExecutor
+
             frame_root = self._resolve_frame_root()
             tags = ("frame_t_minus_2", "frame_t_minus_1", "frame_t")
-            paths_per_row = []
-            missing_counts = defaultdict(int)
+
+            # Build a unique work-list of relative paths to fetch.
+            rels_per_row: list[list[str | None]] = []
+            unique_rels: list[str] = []
+            seen: set[str] = set()
             for i in range(len(df)):
-                row_paths = []
+                row_rels = []
                 for tag in tags:
                     rel = _frame_rel_path(df.iloc[i][tag])
+                    row_rels.append(rel)
+                    if rel and rel not in seen:
+                        seen.add(rel)
+                        unique_rels.append(rel)
+                rels_per_row.append(row_rels)
+
+            workers = int(os.environ.get("EGOOWN_DL_WORKERS", "16"))
+            print(
+                f"[EgoOwn:{dataset}] downloading/resolving {len(unique_rels)} frames "
+                f"with {workers} workers..."
+            )
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                resolved = list(
+                    pool.map(lambda r: (r, self._ensure_frame(r, frame_root)), unique_rels)
+                )
+            path_by_rel: dict[str, str] = {r: p for r, p in resolved if p}
+
+            paths_per_row = []
+            missing_counts = defaultdict(int)
+            for row_rels in rels_per_row:
+                row_paths: list[str] = []
+                for rel in row_rels:
                     if rel is None:
                         missing_counts["no_rel"] += 1
                         continue
-                    abs_path = self._ensure_frame(rel, frame_root)
-                    if abs_path:
-                        row_paths.append(abs_path)
+                    p = path_by_rel.get(rel)
+                    if p:
+                        row_paths.append(p)
                     else:
                         missing_counts["no_file"] += 1
                 paths_per_row.append(row_paths)
