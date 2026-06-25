@@ -50,6 +50,10 @@ English | [简体中文](/docs/zh-CN/README_zh-CN.md) | [日本語](/docs/ja/REA
 
 See [[QuickStart](/docs/en/Quickstart.md) | [快速开始](/docs/zh-CN/Quickstart.md)] for a quick start guide.
 
+For the Egocentric Implicit Ownership benchmark (configs `EgoOwn`,
+`EgoOwn_NarrA`, `EgoOwn_EgoLife`) wired into this repo, see
+[docs/en/EgoOwnership.md](/docs/en/EgoOwnership.md).
+
 ## 📊 Datasets, Models, and Evaluation Results
 
 ### Evaluation Results

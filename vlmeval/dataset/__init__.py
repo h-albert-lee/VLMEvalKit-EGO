@@ -27,6 +27,7 @@ from .dsrbench import DSRBench
 from .dude import DUDE
 from .dynamath import Dynamath
 from .EgoExoBench.egoexobench import EgoExoBench_MCQ
+from .egoownership import EgoOwnershipBench
 from .embspatialbench import EmbSpatialBench
 from .emma import EMMADataset
 from .eriq import ERIQBench
@@ -300,6 +301,7 @@ IMAGE_DATASET = [
     Design2Code, VLADBench, SSIBenchDataset, NPMM, SGI_Bench_Experimental_Reasoning, MMOral_OPG_OPEN, MMOral_OPG_CLOSED,  # noqa: E501
     SciDocBench,
     MMRarebenchDiagnosis, MMRarebenchTreatment, MMRarebenchCrossmodal, MMRarebenchExamination,
+    EgoOwnershipBench,
 ]
 
 # add by EASI team

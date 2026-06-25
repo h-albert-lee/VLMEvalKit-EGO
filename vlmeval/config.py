@@ -603,6 +603,16 @@ api_models = {
         verbose=False,
         timeout=1800
     ),
+    "Claude_Jupiter_V1_P": partial(
+        api.Claude3V,
+        model="claude-jupiter-v1-p",
+        backend="official",
+        temperature=0,
+        retry=6,
+        verbose=False,
+        max_tokens=1024,
+        timeout=300,
+    ),
     "Claude-Opus-4-6": partial(
         api.GPT4V,
         model="claude-opus-4-6-thinking",
