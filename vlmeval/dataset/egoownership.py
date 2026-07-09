@@ -1,31 +1,58 @@
 """EgoOwnershipBench — Egocentric Implicit Ownership benchmark.
 
 Wraps the HuggingFace dataset `Albertmade/ego-implicit-ownership-multiperson`
-(3 parquet configs: `default`, `narration_a`, `egolife`) into a VLMEvalKit
-4-class MCQ task.
+into a VLMEvalKit 4-class MCQ task with **four input modes**, selected by the
+dataset-name suffix:
 
-Each clip is shown as up to 3 sparse frames (t-2, t-1, t) — when available —
-plus a narration sentence + verb/noun metadata. The model picks one of
-MINE / PERSON_k / SHARED / AMBIGUOUS for the salient object.
+  EgoOwn                sparse-frame  (t-2, t-1, t)          [paper setting (b)]
+  EgoOwn_Single         single-frame  (t only)               [paper setting (a)]
+  EgoOwn_Clip           short clip    (dense frames / mp4 from source video)
+  EgoOwn_Blind          text-only     (no images; narration + metadata)
+  EgoOwn_EgoLife[...]   same modes over the egolife parquet
+  EgoOwn_NarrA          legacy narration-only parquet (kept for compatibility)
 
-Reference labels are the Claude (`claude-jupiter-v1-p`) judgements stored in
-`vlm_label`; this dataset has no human ground truth, so accuracy here measures
-agreement with Claude. Override with EGOOWN_REF_FIELD=rule_label to compare
-against the rule heuristic instead (only `egolife` populates that field).
+Design invariants (paper §3 / §5, labeling guideline v2-2026-07-04):
+  * Prompt encodes guideline v2: ownership ≠ possession + boundary rules.
+  * NO diagnostic leakage: taxonomy / source_dataset are never shown to the
+    model; narration is shown only in Blind mode (or when
+    EGOOWN_INCLUDE_NARRATION=1 is explicitly set for ablations).
+  * Option order is shuffled per item, deterministically from
+    (clip_id, EGOOWN_OPT_SEED). Re-running with a different EGOOWN_OPT_SEED
+    yields a new-but-reproducible permutation — this is the §5.4
+    option-order permutation test.
+  * evaluate() emits per-label acc, macro-F1, per-taxonomy acc, abstention
+    precision/recall, over-abstention, prediction distribution, confusion
+    matrix, and a reproducibility manifest (prompt version, seeds, git rev,
+    ref field, mode).
 
-Source layout (per the `default` parquet):
-  hd_epic/<video_id>/<clip>__<tag>.jpg
-  epic_kitchens/<video_id>/<clip>__<tag>.jpg
-  egolife/<video_id>/<clip>__<tag>.jpg
+Reference labels default to `vlm_label` (Claude judge); once the human
+re-review lands, set EGOOWN_REF_FIELD=human_label (or rule_label for the
+cascade heuristic).
+
+Env knobs:
+  EGOOWN_REF_FIELD           reference label column   (default: vlm_label)
+  EGOOWN_OPT_SEED            option-shuffle seed      (default: 0)
+  EGOOWN_LIMIT               row limit for smoke runs (default: 0 = all)
+  EGOOWN_LOCAL_ROOT          local mirror with data/*.parquet and frames/
+  EGOOWN_DL_WORKERS          parallel frame downloads (default: 16)
+  EGOOWN_INCLUDE_NARRATION   =1 leaks narration into visual modes (ablation)
+  EGOOWN_VIDEOS_ROOT         {video_id}.mp4 dir — required for Clip mode
+  EGOOWN_CLIP_NFRAMES        dense frames per clip    (default: 8)
+  EGOOWN_CLIP_AS_VIDEO       =1 pass an mp4 (video-native models) instead of
+                             dense frames
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import os.path as osp
-import string
+import random
+import subprocess
 import warnings
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -37,41 +64,138 @@ from .image_base import ImageBaseDataset
 _HF_REPO = "Albertmade/ego-implicit-ownership-multiperson"
 _LABELS = ["MINE", "PERSON_k", "SHARED", "AMBIGUOUS"]
 _OPT_LETTERS = ["A", "B", "C", "D"]
-_LABEL_BY_LETTER = dict(zip(_OPT_LETTERS, _LABELS))
-_LETTER_BY_LABEL = {v: k for k, v in _LABEL_BY_LETTER.items()}
+_ABSTAIN_LABEL = "AMBIGUOUS"
 
-_CONFIG_BY_NAME = {
-    # vlmeval dataset name -> (HF parquet filename relative to repo root, has-frames)
-    # Filenames mirror the `configs:` block in the dataset README's YAML
-    # frontmatter, so anyone re-pulling from HF gets the same files.
-    "EgoOwn":         ("data/train.parquet",       True),
-    "EgoOwn_NarrA":   ("data/narration_a.parquet", False),
-    "EgoOwn_EgoLife": ("data/egolife.parquet",     True),
+PROMPT_VERSION = "v2-2026-07-04"
+
+_MODE_SUFFIX = {"_Single": "single", "_Clip": "clip", "_Blind": "blind"}
+
+# base config -> (parquet filename, has frame columns)
+_BASE_CONFIGS = {
+    "EgoOwn": ("data/train.parquet", True),
+    "EgoOwn_EgoLife": ("data/egolife.parquet", True),
+    "EgoOwn_NarrA": ("data/narration_a.parquet", False),  # legacy text-only parquet
 }
 
-_TASK_INSTRUCTION = (
-    "You are watching short first-person (egocentric) clips. For each clip we "
-    "show up to 3 sparse frames (t-2, t-1, t) plus a narration describing what "
-    "happens. Decide who owns the salient object referenced by the action.\n\n"
-    "Label definitions:\n"
-    "  MINE      — owned by the camera wearer (the person whose head the camera is on)\n"
-    "  PERSON_k  — owned by another visible person\n"
-    "  SHARED    — communal / table-center / not personally owned\n"
-    "  AMBIGUOUS — symmetric, occluded, or insufficient evidence to decide\n"
-)
+
+def _parse_dataset_name(dataset: str) -> tuple[str, str]:
+    """Return (base_config, mode). Default mode is sparse."""
+    if dataset == "EgoOwn_NarrA":
+        return "EgoOwn_NarrA", "blind"
+    for suffix, mode in _MODE_SUFFIX.items():
+        if dataset.endswith(suffix):
+            base = dataset[: -len(suffix)]
+            if base in _BASE_CONFIGS:
+                return base, mode
+    if dataset in _BASE_CONFIGS:
+        return dataset, "sparse"
+    raise ValueError(
+        f"Unknown EgoOwnership dataset {dataset!r}; expected one of "
+        f"{sorted(_all_dataset_names())}"
+    )
+
+
+def _all_dataset_names() -> list[str]:
+    names = []
+    for base in ("EgoOwn", "EgoOwn_EgoLife"):
+        names.append(base)  # sparse default
+        names.extend(base + s for s in _MODE_SUFFIX)
+    names.append("EgoOwn_NarrA")
+    return names
+
+
+# ---------------------------------------------------------------------------
+# Prompt (guideline v2) — keep in sync with label-pipeline vlm_crosscheck.py
+# ---------------------------------------------------------------------------
+
+_TASK_INSTRUCTION = """\
+You are shown evidence from a short first-person (egocentric) video. Decide \
+who OWNS the salient object involved in the action. Ownership is not the \
+same as possession: who is holding or using the object right now does not by \
+itself decide whose it is.
+
+Label definitions:
+{label_defs}
+
+Apply these boundary rules — they OVERRIDE naive proximity or possession cues:
+  1. Place-setting: tableware set at a person's seat belongs to that person
+     even before they touch it (setting the place counts as first possession).
+  2. Communal persistence: an inherently communal item (serving spoon, shared
+     bottle, serving platter, communal dish) stays SHARED even while one
+     person is holding or using it — transient use does not transfer ownership.
+  3. Function-first ambiguity: an inherently communal-function item defaults
+     to SHARED; a personal-function item (cup, phone, pen) with no attribution
+     cues is AMBIGUOUS.
+  4. Holding is not owning: an object in someone's hand is not automatically
+     theirs — infer whose it is, not who controls it right now.
+  5. Abandonment: pushing one's own item into shared space does not transfer
+     or void ownership.
+"""
+
+_LABEL_DEF_LINES = {
+    "MINE": "the object belongs to the camera wearer (ego)",
+    "PERSON_k": "the object belongs to another person in the scene",
+    "SHARED": (
+        "a communal item that belongs to no single person "
+        "(inherently shared by function, or by established shared use)"
+    ),
+    "AMBIGUOUS": (
+        "the visual evidence is insufficient to attribute ownership to anyone"
+    ),
+}
+
+_FRAME_CAPTIONS = {
+    "sparse": (
+        "The images above are three sparse frames from the clip in "
+        "chronological order: t-2 (2s before the action), t-1 (1s before), "
+        "and t (the action moment). Judge ownership AT frame t, using the "
+        "earlier frames as context."
+    ),
+    "single": (
+        "The image above is the action-moment frame (t) of the clip. Judge "
+        "ownership at this moment."
+    ),
+    "clip": (
+        "You are shown the clip (or densely sampled frames from it) in "
+        "chronological order, ending at the action moment t. Judge ownership "
+        "AT the final moment, using the earlier footage as context."
+    ),
+    "blind": (
+        "No images are available. Decide from the text description alone; "
+        "if the text is insufficient to attribute ownership, answer with the "
+        "insufficient-evidence option."
+    ),
+}
+
+
+def _option_order_for(clip_id: str, seed: int) -> list[str]:
+    """Deterministic per-item label order (varies across items and seeds)."""
+    digest = hashlib.sha256(f"{seed}:{clip_id}".encode("utf-8")).digest()
+    rng = random.Random(int.from_bytes(digest[:8], "big"))
+    order = list(_LABELS)
+    rng.shuffle(order)
+    return order
 
 
 def _frame_rel_path(frame_struct):
-    """Pull `frame_path` out of the nested struct column, robustly."""
     if frame_struct is None:
         return None
     if isinstance(frame_struct, dict):
         return frame_struct.get("frame_path")
-    # numpy void / structured record fallback
     try:
         return frame_struct["frame_path"]
     except Exception:
         return None
+
+
+def _git_rev(repo_dir: str) -> str:
+    try:
+        return subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 class EgoOwnershipBench(ImageBaseDataset):
@@ -79,37 +203,37 @@ class EgoOwnershipBench(ImageBaseDataset):
 
     TYPE = "MCQ"
     MODALITY = "IMAGE"
-    DATASET_URL = {k: _HF_REPO for k in _CONFIG_BY_NAME}
+    DATASET_URL = {k: _HF_REPO for k in _all_dataset_names()}
     DATASET_MD5 = {}
 
     def __init__(self, dataset: str = "EgoOwn", **kwargs):
-        if dataset not in _CONFIG_BY_NAME:
-            raise ValueError(
-                f"Unknown EgoOwnership config {dataset!r}; "
-                f"expected one of {list(_CONFIG_BY_NAME)}"
-            )
-        self._parquet_filename, self._has_frames = _CONFIG_BY_NAME[dataset]
-        # Skip ImageBaseDataset's tsv-download pipeline; load via _prepare()
+        base, mode = _parse_dataset_name(dataset)
+        self._base_config = base
+        self.mode = mode
+        self._parquet_filename, self._has_frames = _BASE_CONFIGS[base]
+        self.opt_seed = int(os.environ.get("EGOOWN_OPT_SEED", "0") or 0)
+        self.ref_field = os.environ.get("EGOOWN_REF_FIELD", "vlm_label")
+        self.include_narration = (
+            mode == "blind" or os.environ.get("EGOOWN_INCLUDE_NARRATION") == "1"
+        )
+
         self.dataset_name = dataset
         ROOT = LMUDataRoot()
-        self.img_root = osp.join(ROOT, "images", "EgoOwn")  # unused, we use absolute paths
+        self.img_root = osp.join(ROOT, "images", "EgoOwn")
         os.makedirs(self.img_root, exist_ok=True)
 
         self.data = self._prepare(dataset)
-        self.meta_only = True  # build_prompt reads paths directly from `image_path`
+        self.meta_only = True
         self.skip_noimg = False
         self.post_build(dataset)
 
     @classmethod
     def supported_datasets(cls):
-        return list(_CONFIG_BY_NAME)
+        return _all_dataset_names()
 
     # ----------------------------- data prep ---------------------------------
 
     def _resolve_local_root(self) -> str | None:
-        """Optional local source: avoids HF download in dev. Set EGOOWN_LOCAL_ROOT
-        to a directory that contains `data/<cfg>.parquet` and `frames/`.
-        """
         local = os.environ.get("EGOOWN_LOCAL_ROOT")
         if local and osp.isdir(local):
             return local
@@ -121,21 +245,13 @@ class EgoOwnershipBench(ImageBaseDataset):
             cand = osp.join(local, parquet_filename)
             if osp.exists(cand):
                 return cand
-
         from huggingface_hub import hf_hub_download
-
         return hf_hub_download(
-            repo_id=_HF_REPO,
-            filename=parquet_filename,
-            repo_type="dataset",
+            repo_id=_HF_REPO, filename=parquet_filename, repo_type="dataset",
             token=os.environ.get("HF_TOKEN"),
         )
 
     def _resolve_frame_root(self) -> str | None:
-        """Return a local mirror root (if EGOOWN_LOCAL_ROOT is set), else None.
-
-        When None, frames are pulled lazily via the HF hub cache.
-        """
         local = self._resolve_local_root()
         if local is not None:
             cand = osp.join(local, "frames")
@@ -144,71 +260,131 @@ class EgoOwnershipBench(ImageBaseDataset):
         return None
 
     def _ensure_frame(self, rel_path: str, frame_root: str | None) -> str | None:
-        """Resolve a per-frame relative path (e.g. hd_epic/<vid>/<clip>__t.jpg)
-        to an absolute local file; download from HF on miss. Returns None if
-        unavailable (some clips in narration_a / a few egolife rows).
-        """
         if not rel_path:
             return None
         if frame_root is not None:
             full = osp.join(frame_root, rel_path)
             if osp.exists(full):
                 return full
-
         try:
             from huggingface_hub import hf_hub_download
-
             return hf_hub_download(
-                repo_id=_HF_REPO,
-                filename=f"frames/{rel_path}",
-                repo_type="dataset",
-                token=os.environ.get("HF_TOKEN"),
+                repo_id=_HF_REPO, filename=f"frames/{rel_path}",
+                repo_type="dataset", token=os.environ.get("HF_TOKEN"),
             )
         except Exception as exc:  # noqa: BLE001
             warnings.warn(f"[EgoOwn] missing frame {rel_path}: {exc}")
             return None
 
+    # ---- clip mode helpers ----
+
+    def _clip_media_for_row(self, row) -> tuple[list[str], str | None]:
+        """Return (dense_frame_paths, mp4_path) for Clip mode.
+
+        Requires EGOOWN_VIDEOS_ROOT with {video_id}.mp4 plus per-row timing
+        columns (source_video_start_sec, frame_times_sec). Extraction is
+        cached under LMUDataRoot()/egoown_clips.
+        """
+        videos_root = os.environ.get("EGOOWN_VIDEOS_ROOT")
+        if not videos_root:
+            raise RuntimeError(
+                "Clip mode needs EGOOWN_VIDEOS_ROOT pointing at a directory "
+                "with {video_id}.mp4 source videos."
+            )
+        video_id = row.get("video_id")
+        start = row.get("source_video_start_sec")
+        frame_times = row.get("frame_times_sec")
+        if isinstance(frame_times, str):
+            try:
+                frame_times = json.loads(frame_times)
+            except json.JSONDecodeError:
+                frame_times = None
+        if not video_id or start is None or not isinstance(frame_times, dict):
+            raise RuntimeError(
+                "Clip mode needs per-row `video_id`, `source_video_start_sec` "
+                "and `frame_times_sec` columns in the parquet; this parquet "
+                "revision lacks them — regenerate the dataset export or use "
+                "Sparse/Single mode."
+            )
+        video_path = osp.join(videos_root, f"{video_id}.mp4")
+        if not osp.exists(video_path):
+            raise RuntimeError(f"Clip mode: source video not found: {video_path}")
+
+        t_start = float(start) + float(min(frame_times.values()))
+        t_end = float(start) + float(max(frame_times.values()))
+        duration = max(0.5, t_end - t_start)
+
+        cache = osp.join(LMUDataRoot(), "egoown_clips")
+        os.makedirs(cache, exist_ok=True)
+        safe_id = str(row["index"]).replace("/", "_").replace("#", "__")
+
+        as_video = os.environ.get("EGOOWN_CLIP_AS_VIDEO") == "1"
+        if as_video:
+            mp4 = osp.join(cache, f"{safe_id}.mp4")
+            if not osp.exists(mp4):
+                subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                     "-ss", f"{max(0.0, t_start):.3f}", "-t", f"{duration:.3f}",
+                     "-i", video_path, "-c:v", "libx264", "-an", "-y", mp4],
+                    check=True,
+                )
+            return [], mp4
+
+        nframes = int(os.environ.get("EGOOWN_CLIP_NFRAMES", "8"))
+        paths = []
+        for i in range(nframes):
+            ts = t_start + duration * i / max(1, nframes - 1)
+            dest = osp.join(cache, f"{safe_id}__f{i:02d}.jpg")
+            if not osp.exists(dest):
+                subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                     "-ss", f"{max(0.0, ts):.3f}", "-i", video_path,
+                     "-frames:v", "1", "-q:v", "2", "-y", dest],
+                    check=False,
+                )
+            if osp.exists(dest):
+                paths.append(dest)
+        return paths, None
+
     def _prepare(self, dataset: str) -> pd.DataFrame:
         parquet_path = self._download_parquet(self._parquet_filename)
         df = pd.read_parquet(parquet_path)
 
-        # Reference label for MCQ scoring.
-        ref_field = os.environ.get("EGOOWN_REF_FIELD", "vlm_label")
+        ref_field = self.ref_field
         if ref_field not in df.columns:
             raise ValueError(
-                f"Reference field {ref_field!r} missing from {self._parquet_filename} parquet; "
-                f"available: {list(df.columns)}"
+                f"Reference field {ref_field!r} missing from "
+                f"{self._parquet_filename}; available: {list(df.columns)}"
             )
-
-        # Keep rows whose reference label is in our 4-class space.
         df = df[df[ref_field].isin(_LABELS)].reset_index(drop=True)
         if not len(df):
             raise RuntimeError(
-                f"No rows with a valid {ref_field} value in {self._parquet_filename} parquet."
+                f"No rows with a valid {ref_field} in {self._parquet_filename}."
             )
 
-        # Apply EGOOWN_LIMIT before frame downloads so smoke tests don't pull
-        # 1500+ JPGs from HF just to evaluate a handful.
         limit = int(os.environ.get("EGOOWN_LIMIT", "0") or 0)
         if limit and limit < len(df):
             df = df.iloc[:limit].reset_index(drop=True)
             print(f"[EgoOwn:{dataset}] EGOOWN_LIMIT={limit} -> {len(df)} rows")
 
-        # Resolve frame paths once at load time (only configs with frames).
-        if self._has_frames:
+        df["index"] = df["clip_id"].astype(str)
+
+        # ---- resolve frames (visual frame modes only) ----
+        if self._has_frames and self.mode in ("sparse", "single"):
             from concurrent.futures import ThreadPoolExecutor
 
             frame_root = self._resolve_frame_root()
-            tags = ("frame_t_minus_2", "frame_t_minus_1", "frame_t")
-
-            # Build a unique work-list of relative paths to fetch.
+            tags = (
+                ("frame_t",) if self.mode == "single"
+                else ("frame_t_minus_2", "frame_t_minus_1", "frame_t")
+            )
             rels_per_row: list[list[str | None]] = []
             unique_rels: list[str] = []
             seen: set[str] = set()
             for i in range(len(df)):
                 row_rels = []
                 for tag in tags:
-                    rel = _frame_rel_path(df.iloc[i][tag])
+                    rel = _frame_rel_path(df.iloc[i][tag]) if tag in df.columns else None
                     row_rels.append(rel)
                     if rel and rel not in seen:
                         seen.add(rel)
@@ -217,63 +393,68 @@ class EgoOwnershipBench(ImageBaseDataset):
 
             workers = int(os.environ.get("EGOOWN_DL_WORKERS", "16"))
             print(
-                f"[EgoOwn:{dataset}] downloading/resolving {len(unique_rels)} frames "
-                f"with {workers} workers..."
+                f"[EgoOwn:{dataset}] resolving {len(unique_rels)} frames "
+                f"({self.mode} mode) with {workers} workers..."
             )
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 resolved = list(
                     pool.map(lambda r: (r, self._ensure_frame(r, frame_root)), unique_rels)
                 )
-            path_by_rel: dict[str, str] = {r: p for r, p in resolved if p}
+            path_by_rel = {r: p for r, p in resolved if p}
 
-            paths_per_row = []
-            missing_counts = defaultdict(int)
+            paths_per_row, missing = [], defaultdict(int)
             for row_rels in rels_per_row:
-                row_paths: list[str] = []
+                row_paths = []
                 for rel in row_rels:
                     if rel is None:
-                        missing_counts["no_rel"] += 1
+                        missing["no_rel"] += 1
                         continue
                     p = path_by_rel.get(rel)
                     if p:
                         row_paths.append(p)
                     else:
-                        missing_counts["no_file"] += 1
+                        missing["no_file"] += 1
                 paths_per_row.append(row_paths)
             df["image_path"] = paths_per_row
-            n_full = sum(1 for p in paths_per_row if len(p) == 3)
+            want = len(tags)
+            n_full = sum(1 for p in paths_per_row if len(p) == want)
             print(
-                f"[EgoOwn:{dataset}] frames resolved: {n_full}/{len(df)} clips with all 3, "
-                f"missing rel={missing_counts['no_rel']} file={missing_counts['no_file']}"
+                f"[EgoOwn:{dataset}] frames: {n_full}/{len(df)} rows complete "
+                f"({want} frame(s) each); missing rel={missing['no_rel']} "
+                f"file={missing['no_file']}"
             )
         else:
             df["image_path"] = [[] for _ in range(len(df))]
 
-        # MCQ scaffolding: question + A/B/C/D options + reference answer.
-        df["question"] = "Who owns the salient object referenced by this action?"
-        for letter, label in _LABEL_BY_LETTER.items():
-            df[letter] = label
-        df["answer"] = df[ref_field].map(_LETTER_BY_LABEL)
+        # ---- per-item shuffled MCQ options ----
+        answers, orders = [], []
+        for i in range(len(df)):
+            order = _option_order_for(df.iloc[i]["index"], self.opt_seed)
+            orders.append(order)
+            gt_label = df.iloc[i][ref_field]
+            answers.append(_OPT_LETTERS[order.index(gt_label)])
+        for j, letter in enumerate(_OPT_LETTERS):
+            df[letter] = [order[j] for order in orders]
+        df["answer"] = answers
+        df["answer_label"] = df[ref_field]
+        df["option_order"] = ["|".join(o) for o in orders]
+        df["question"] = "Who owns the salient object involved in this action?"
 
-        # Stable string index (required by VLMEvalKit).
-        df["index"] = df["clip_id"].astype(str)
-
-        # Carry diagnostic fields for evaluate()
         keep = [
             "index", "clip_id", "source_dataset", "video_id", "taxonomy",
             "verb", "narration", "image_path",
-            "question", *_OPT_LETTERS, "answer",
+            "source_video_start_sec", "frame_times_sec", "guideline_version",
+            "question", *_OPT_LETTERS, "answer", "answer_label", "option_order",
             ref_field, "rule_label",
         ]
         keep = [c for c in keep if c in df.columns]
-        df = df[keep].copy()
+        df = df[list(dict.fromkeys(keep))].copy()
         df.attrs["ref_field"] = ref_field
         return df
 
     # --------------------------- prompt + dump -------------------------------
 
     def dump_image(self, line):
-        # `image_path` is already a list of absolute local paths.
         paths = line["image_path"]
         if isinstance(paths, np.ndarray):
             paths = list(paths)
@@ -285,41 +466,54 @@ class EgoOwnershipBench(ImageBaseDataset):
         if isinstance(line, int):
             line = self.data.iloc[line]
 
-        paths = self.dump_image(line)
-
-        narration = line.get("narration") if isinstance(line, dict) else line["narration"]
-        verb = line.get("verb") if isinstance(line, dict) else line["verb"]
-        taxonomy = line.get("taxonomy") if isinstance(line, dict) else line["taxonomy"]
-        src_dataset = line.get("source_dataset") if isinstance(line, dict) else line["source_dataset"]
-
-        narration = narration if (isinstance(narration, str) and narration) else "—"
-        verb = verb if (isinstance(verb, str) and verb) else "—"
-
-        opts_block = "\n".join(f"{l}. {_LABEL_BY_LETTER[l]}" for l in _OPT_LETTERS)
-
-        if paths:
-            frame_caption = (
-                f"Frames shown above are t-2, t-1, t (chronological) from "
-                f"the clip below.\n"
-            )
+        mp4_path = None
+        if self.mode == "blind":
+            paths = []
+        elif self.mode == "clip":
+            paths, mp4_path = self._clip_media_for_row(line)
         else:
-            frame_caption = "No frames available; decide from narration text alone.\n"
+            paths = self.dump_image(line)
 
-        prompt = (
-            f"{_TASK_INSTRUCTION}\n"
-            f"{frame_caption}\n"
-            f"Clip metadata\n"
-            f"  source_dataset: {src_dataset}\n"
-            f"  taxonomy: {taxonomy}\n"
-            f"  verb: {verb}\n"
-            f"  narration: {narration}\n\n"
-            f"Question: {line['question']}\n"
-            f"Options:\n{opts_block}\n\n"
-            "Respond with a single capital letter (A, B, C, or D) corresponding "
-            "to the correct label."
+        # Per-item option block (shuffled order fixed at prepare time).
+        opts_block = "\n".join(
+            f"{letter}. {line[letter]}" for letter in _OPT_LETTERS
+        )
+        label_defs = "\n".join(
+            f"  {line[letter]:<9} — {_LABEL_DEF_LINES[line[letter]]}"
+            for letter in _OPT_LETTERS
         )
 
-        msgs = [dict(type="image", value=p) for p in paths]
+        # Text evidence: only in blind mode (or explicit ablation flag) —
+        # narration is a known textual shortcut (§5.4); taxonomy and
+        # source_dataset are diagnostic metadata and are NEVER shown.
+        evidence_lines = []
+        if self.include_narration:
+            narration = line.get("narration") if isinstance(line, dict) else line["narration"]
+            verb = line.get("verb") if isinstance(line, dict) else line["verb"]
+            narration = narration if isinstance(narration, str) and narration else "—"
+            verb = verb if isinstance(verb, str) and verb else "—"
+            evidence_lines += [
+                "Text evidence:",
+                f"  action verb: {verb}",
+                f"  narration:   {narration}",
+                "",
+            ]
+
+        prompt = (
+            _TASK_INSTRUCTION.format(label_defs=label_defs)
+            + "\n"
+            + _FRAME_CAPTIONS[self.mode]
+            + "\n\n"
+            + "\n".join(evidence_lines)
+            + f"Question: {line['question']}\n"
+            + f"Options:\n{opts_block}\n\n"
+            + "Respond with a single capital letter (A, B, C, or D)."
+        )
+
+        msgs = []
+        if mp4_path:
+            msgs.append(dict(type="video", value=mp4_path))
+        msgs.extend(dict(type="image", value=p) for p in paths)
         msgs.append(dict(type="text", value=prompt))
         return msgs
 
@@ -332,22 +526,28 @@ class EgoOwnershipBench(ImageBaseDataset):
         s = str(prediction).strip()
         if not s:
             return None
-        # 1) leading single letter "A", "A.", "A)" ...
         head = s.lstrip().lstrip("(").lstrip("[")
         if head and head[0].upper() in _OPT_LETTERS:
             nxt = head[1:2]
             if nxt in {"", ".", ")", "]", ":", " ", "\n", ",", "-", "/"}:
                 return head[0].upper()
-        # 2) explicit label name anywhere in the text (longest first)
-        up = s.upper()
-        for label in sorted(_LABELS, key=len, reverse=True):
-            if label in up:
-                return _LETTER_BY_LABEL[label]
-        # 3) bare uppercase letter token
         import re
         m = re.search(r"\b([A-D])\b", s)
         if m:
             return m.group(1)
+        return None
+
+    @classmethod
+    def _extract_pred_label(cls, prediction: str, row) -> str | None:
+        """Letter first (decoded via the row's shuffled mapping), else a label
+        name mentioned anywhere in the response text."""
+        letter = cls._extract_letter(prediction)
+        if letter is not None:
+            return row[letter]
+        up = str(prediction).upper() if prediction is not None else ""
+        for label in sorted(_LABELS, key=len, reverse=True):
+            if label.upper() in up:
+                return label
         return None
 
     def evaluate(self, eval_file, **judge_kwargs):
@@ -355,60 +555,97 @@ class EgoOwnershipBench(ImageBaseDataset):
         report_file = get_intermediate_file_path(eval_file, "_score", "json")
 
         data = load(eval_file)
-        if "answer" not in data.columns or "prediction" not in data.columns:
-            raise ValueError("eval_file must contain `answer` and `prediction` columns")
+        if "prediction" not in data.columns:
+            raise ValueError("eval_file must contain a `prediction` column")
 
-        # Re-attach metadata fields from the meta df for breakdowns.
-        meta_cols = [c for c in ("taxonomy", "source_dataset", "rule_label") if c in self.data.columns]
-        if meta_cols:
-            meta = self.data[["index"] + meta_cols].copy()
-            meta["index"] = meta["index"].astype(str)
-            data["index"] = data["index"].astype(str)
-            data = data.merge(meta, on="index", how="left", suffixes=("", "_meta"))
-
-        # Predicted letter & label.
-        pred_letters = [self._extract_letter(p) for p in data["prediction"]]
-        data["pred_letter"] = pred_letters
-        data["pred_label"] = [
-            _LABEL_BY_LETTER[l] if l in _LABEL_BY_LETTER else None for l in pred_letters
+        # Re-attach meta + per-row option mapping from self.data (authoritative).
+        meta_cols = [
+            c for c in (
+                "taxonomy", "source_dataset", "rule_label", "answer_label",
+                "option_order", *_OPT_LETTERS,
+            ) if c in self.data.columns
         ]
-        data["gt_label"] = [_LABEL_BY_LETTER.get(str(a), str(a)) for a in data["answer"]]
+        meta = self.data[["index"] + meta_cols].copy()
+        meta["index"] = meta["index"].astype(str)
+        data["index"] = data["index"].astype(str)
+        drop_dup = [c for c in meta_cols if c in data.columns]
+        data = data.drop(columns=drop_dup).merge(meta, on="index", how="left")
+
+        data["pred_label"] = [
+            self._extract_pred_label(p, row)
+            for p, (_, row) in zip(data["prediction"], data.iterrows())
+        ]
+        data["gt_label"] = data["answer_label"]
         data["hit"] = [
             int(pl == gl) if pl is not None else 0
             for pl, gl in zip(data["pred_label"], data["gt_label"])
         ]
-        data["parsed"] = [int(p is not None) for p in pred_letters]
+        data["parsed"] = [int(pl is not None) for pl in data["pred_label"]]
 
-        # Breakdowns.
-        results: dict[str, float] = {
+        results: dict = {
             "overall_acc": float(data["hit"].mean()) if len(data) else 0.0,
             "parsed_rate": float(data["parsed"].mean()) if len(data) else 0.0,
             "n": int(len(data)),
         }
 
-        # Per-label (gt) accuracy.
+        # Per-label accuracy + per-label F1 -> macro-F1.
+        f1s = []
         for label in _LABELS:
-            mask = data["gt_label"] == label
-            results[f"acc:{label}"] = float(data.loc[mask, "hit"].mean()) if mask.any() else None
-            results[f"n:{label}"] = int(mask.sum())
+            gt_mask = data["gt_label"] == label
+            pd_mask = data["pred_label"] == label
+            tp = int((gt_mask & pd_mask).sum())
+            prec = tp / int(pd_mask.sum()) if pd_mask.any() else 0.0
+            rec = tp / int(gt_mask.sum()) if gt_mask.any() else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+            if gt_mask.any():
+                f1s.append(f1)
+            results[f"acc:{label}"] = float(data.loc[gt_mask, "hit"].mean()) if gt_mask.any() else None
+            results[f"f1:{label}"] = round(f1, 4) if gt_mask.any() else None
+            results[f"n:{label}"] = int(gt_mask.sum())
+            # Prediction distribution — label-collapse / prior diagnostics.
+            results[f"pred_frac:{label}"] = float(pd_mask.mean()) if len(data) else 0.0
+        results["macro_f1"] = round(float(np.mean(f1s)), 4) if f1s else 0.0
 
-        # Per-taxonomy / per-source dataset.
+        # Abstention diagnostics (AMBIGUOUS as abstain).
+        gt_abst = data["gt_label"] == _ABSTAIN_LABEL
+        pd_abst = data["pred_label"] == _ABSTAIN_LABEL
+        tp = int((gt_abst & pd_abst).sum())
+        results["abstain_precision"] = round(tp / int(pd_abst.sum()), 4) if pd_abst.any() else None
+        results["abstain_recall"] = round(tp / int(gt_abst.sum()), 4) if gt_abst.any() else None
+        non_abst = ~gt_abst
+        results["over_abstention_rate"] = round(
+            float((pd_abst & non_abst).sum() / max(1, int(non_abst.sum()))), 4
+        )
+
+        # Per-taxonomy / per-source breakdowns.
         for col in ("taxonomy", "source_dataset"):
             if col in data.columns:
                 for key, sub in data.groupby(col, dropna=False):
                     results[f"acc:{col}={key}"] = float(sub["hit"].mean())
                     results[f"n:{col}={key}"] = int(len(sub))
 
-        # Confusion matrix (gt × pred, including "UNPARSED").
+        # Confusion matrix (gt × pred, incl. UNPARSED).
         labels_plus = _LABELS + ["UNPARSED"]
         cm = pd.DataFrame(0, index=labels_plus, columns=labels_plus, dtype=int)
         for gl, pl in zip(data["gt_label"], data["pred_label"]):
             cm.loc[gl, pl if pl in _LABELS else "UNPARSED"] += 1
 
-        # Save artefacts.
+        # Reproducibility manifest.
+        results["manifest"] = {
+            "dataset": self.dataset_name,
+            "base_config": self._base_config,
+            "mode": self.mode,
+            "prompt_version": PROMPT_VERSION,
+            "opt_seed": self.opt_seed,
+            "ref_field": self.ref_field,
+            "include_narration": self.include_narration,
+            "eval_code_rev": _git_rev(osp.dirname(osp.dirname(osp.dirname(__file__)))),
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "eval_file": osp.basename(str(eval_file)),
+        }
+
         scored_path = get_intermediate_file_path(eval_file, "_scored", "xlsx")
         dump(data, scored_path)
-        dump(cm, score_file)            # CSV: confusion matrix
-        dump(results, report_file)      # JSON: scalar metrics
-
+        dump(cm, score_file)
+        dump(results, report_file)
         return results
