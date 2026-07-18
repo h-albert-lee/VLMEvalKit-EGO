@@ -80,15 +80,24 @@ _BASE_CONFIGS = {
 }
 
 
-def _parse_dataset_name(dataset: str) -> tuple[str, str]:
-    """Return (base_config, mode). Default mode is sparse."""
+def _parse_dataset_name(dataset: str) -> tuple[str, str, str]:
+    """Return (base_config, mode, prompt_style).
+
+    A trailing "_Method" selects the §6 lightweight-remedy prompt
+    (evidence-aware extraction + sparse-frame CoT); it composes with input
+    modes, e.g. EgoOwn_Method (sparse) or EgoOwn_Single_Method.
+    """
+    style = "base"
+    if dataset.endswith("_Method"):
+        style = "evidence_cot"
+        dataset = dataset[: -len("_Method")]
     for suffix, mode in _MODE_SUFFIX.items():
         if dataset.endswith(suffix):
             base = dataset[: -len(suffix)]
             if base in _BASE_CONFIGS:
-                return base, mode
+                return base, mode, style
     if dataset in _BASE_CONFIGS:
-        return dataset, "sparse"
+        return dataset, "sparse", style
     raise ValueError(
         f"Unknown EgoOwnership dataset {dataset!r}; expected one of "
         f"{sorted(_all_dataset_names())}"
@@ -100,6 +109,8 @@ def _all_dataset_names() -> list[str]:
     for base in _BASE_CONFIGS:
         names.append(base)  # sparse default
         names.extend(base + s for s in _MODE_SUFFIX)
+    # §6 method variants (evidence-aware + CoT) on the two frame modes.
+    names.extend([base + "_Method", base + "_Single_Method"])
     return names
 
 
@@ -206,9 +217,10 @@ class EgoOwnershipBench(ImageBaseDataset):
     DATASET_MD5 = {}
 
     def __init__(self, dataset: str = "EgoOwn", **kwargs):
-        base, mode = _parse_dataset_name(dataset)
+        base, mode, style = _parse_dataset_name(dataset)
         self._base_config = base
         self.mode = mode
+        self.prompt_style = style  # "base" | "evidence_cot" (§6 remedy)
         self._parquet_filename, self._has_frames = _BASE_CONFIGS[base]
         self.opt_seed = int(os.environ.get("EGOOWN_OPT_SEED", "0") or 0)
         # Default: human-audited final GT. vlm_label exists only for comparison
@@ -564,6 +576,40 @@ class EgoOwnershipBench(ImageBaseDataset):
                 "",
             ]
 
+        if self.prompt_style == "evidence_cot":
+            # §6 lightweight remedy: evidence-aware extraction + sparse-frame
+            # CoT. Operationalizes the §3 cue set; abstention explicitly
+            # licensed. Ends with a parseable "Answer: X" line.
+            closing = (
+                "Before answering, work through the evidence explicitly:\n"
+                "  Step 1 — Object function: is the target object inherently "
+                "communal (serving-ware, shared containers) or personal-use? "
+                "State which.\n"
+                "  Step 2 — Spatial evidence: which zone does it occupy at "
+                "frame t — the wearer's own space, another person's space, or "
+                "neutral/shared ground?\n"
+                "  Step 3 — Affordance evidence: does its orientation (handle "
+                "direction, opening, facing) point toward anyone?\n"
+            )
+            if self.mode in ("sparse", "clip"):
+                closing += (
+                    "  Step 4 — Temporal evidence: track possession frame by "
+                    "frame (t-2 → t-1 → t): who placed, moved, held, or "
+                    "received it? Prior possession and origin can override "
+                    "where it sits now.\n"
+                )
+            closing += (
+                "Then decide, applying the boundary rules above to the "
+                "evidence you stated. If the evidence you listed is "
+                "insufficient to attribute ownership, choosing the "
+                "insufficient-evidence option is the correct answer, not a "
+                "failure.\n\n"
+                "End your response with exactly one line: 'Answer: X' where "
+                "X is A, B, C, or D."
+            )
+        else:
+            closing = "Respond with a single capital letter (A, B, C, or D)."
+
         prompt = (
             _TASK_INSTRUCTION.format(label_defs=label_defs)
             + "\n"
@@ -572,7 +618,7 @@ class EgoOwnershipBench(ImageBaseDataset):
             + "\n".join(evidence_lines)
             + f"Question: {line['question']}\n"
             + f"Options:\n{opts_block}\n\n"
-            + "Respond with a single capital letter (A, B, C, or D)."
+            + closing
         )
 
         msgs = []
@@ -591,12 +637,18 @@ class EgoOwnershipBench(ImageBaseDataset):
         s = str(prediction).strip()
         if not s:
             return None
+        import re
+        # 1) Explicit "Answer: X" line (Method/CoT responses) — take the LAST
+        #    occurrence so restated intermediate guesses don't win. Checked
+        #    first because CoT prose is full of stray capital A's ("A cup...").
+        answers = re.findall(r"answer\s*[:\-]?\s*\(?\[?([A-Da-d])\)?\]?\b", s, re.IGNORECASE)
+        if answers:
+            return answers[-1].upper()
         head = s.lstrip().lstrip("(").lstrip("[")
         if head and head[0].upper() in _OPT_LETTERS:
             nxt = head[1:2]
             if nxt in {"", ".", ")", "]", ":", " ", "\n", ",", "-", "/"}:
                 return head[0].upper()
-        import re
         m = re.search(r"\b([A-D])\b", s)
         if m:
             return m.group(1)
@@ -700,7 +752,11 @@ class EgoOwnershipBench(ImageBaseDataset):
             "dataset": self.dataset_name,
             "base_config": self._base_config,
             "mode": self.mode,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": (
+                PROMPT_VERSION if self.prompt_style == "base"
+                else f"{PROMPT_VERSION}+{self.prompt_style}-v1"
+            ),
+            "prompt_style": self.prompt_style,
             "opt_seed": self.opt_seed,
             "ref_field": self.ref_field,
             "include_narration": self.include_narration,
