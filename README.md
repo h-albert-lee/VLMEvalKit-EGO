@@ -42,8 +42,8 @@ python run.py --model Qwen2.5-VL-7B-Instruct --data EgoOwn EgoOwn_Single EgoOwn_
 # 스모크 테스트 (50개, 2세팅)
 MODELS="GPT4o" DATASETS="EgoOwn_Single EgoOwn" EGOOWN_LIMIT=50 ./scripts/run_egoown_sweep.sh
 
-# 본 실험
-MODELS="GPT4o Claude-Sonnet Gemini-Pro Qwen2.5-VL-7B-Instruct InternVL3-8B" \
+# 본 실험 (⚠️ 승인 모델 리스트 준수 — InternVL3 사용 불가, 오픈 모델은 7B 버전만)
+MODELS="GPT4o Claude-Sonnet Gemini-Pro Qwen2.5-VL-7B-Instruct Qwen2.5-Omni-7B llava-1.5-7b" \
   ./scripts/run_egoown_sweep.sh
 
 # §5.4 선택지 순서 permutation (seed별 재실행)
