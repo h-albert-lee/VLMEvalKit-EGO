@@ -61,7 +61,7 @@ from vlmeval.smp import LMUDataRoot, dump, get_intermediate_file_path, load
 
 from .image_base import ImageBaseDataset
 
-_HF_REPO = "Albertmade/ego-implicit-ownership-multiperson"
+_HF_REPO = "ego-ownership/merged-to-review"  # final benchmark (gated; needs HF_TOKEN)
 _LABELS = ["MINE", "PERSON_k", "SHARED", "AMBIGUOUS"]
 _OPT_LETTERS = ["A", "B", "C", "D"]
 _ABSTAIN_LABEL = "AMBIGUOUS"
@@ -71,17 +71,17 @@ PROMPT_VERSION = "v2-2026-07-04"
 _MODE_SUFFIX = {"_Single": "single", "_Clip": "clip", "_Blind": "blind"}
 
 # base config -> (parquet filename, has frame columns)
+# 2026-07-16: switched to the final merged benchmark (3,229 rows, 3 sources
+# unified; per-source breakdown via the source_dataset column). Legacy
+# EgoOwn_EgoLife / EgoOwn_NarrA configs removed — no counterpart files in the
+# new repo.
 _BASE_CONFIGS = {
-    "EgoOwn": ("data/train.parquet", True),
-    "EgoOwn_EgoLife": ("data/egolife.parquet", True),
-    "EgoOwn_NarrA": ("data/narration_a.parquet", False),  # legacy text-only parquet
+    "EgoOwn": ("data/eval.parquet", True),
 }
 
 
 def _parse_dataset_name(dataset: str) -> tuple[str, str]:
     """Return (base_config, mode). Default mode is sparse."""
-    if dataset == "EgoOwn_NarrA":
-        return "EgoOwn_NarrA", "blind"
     for suffix, mode in _MODE_SUFFIX.items():
         if dataset.endswith(suffix):
             base = dataset[: -len(suffix)]
@@ -97,10 +97,9 @@ def _parse_dataset_name(dataset: str) -> tuple[str, str]:
 
 def _all_dataset_names() -> list[str]:
     names = []
-    for base in ("EgoOwn", "EgoOwn_EgoLife"):
+    for base in _BASE_CONFIGS:
         names.append(base)  # sparse default
         names.extend(base + s for s in _MODE_SUFFIX)
-    names.append("EgoOwn_NarrA")
     return names
 
 
@@ -212,7 +211,9 @@ class EgoOwnershipBench(ImageBaseDataset):
         self.mode = mode
         self._parquet_filename, self._has_frames = _BASE_CONFIGS[base]
         self.opt_seed = int(os.environ.get("EGOOWN_OPT_SEED", "0") or 0)
-        self.ref_field = os.environ.get("EGOOWN_REF_FIELD", "vlm_label")
+        # Default: human-audited final GT. vlm_label exists only for comparison
+        # (and is null for egolife/rescue rows — do NOT use it as reference).
+        self.ref_field = os.environ.get("EGOOWN_REF_FIELD", "human_label")
         self.include_narration = (
             mode == "blind" or os.environ.get("EGOOWN_INCLUDE_NARRATION") == "1"
         )
@@ -275,6 +276,53 @@ class EgoOwnershipBench(ImageBaseDataset):
         except Exception as exc:  # noqa: BLE001
             warnings.warn(f"[EgoOwn] missing frame {rel_path}: {exc}")
             return None
+
+    # ---- frame reconstruction (metadata-only rows, e.g. Ego4D) ----
+
+    def _reconstruct_frame(self, row, tag: str) -> str | None:
+        """Extract one sparse frame from the source video for rows whose
+        frame_path is null (Ego4D metadata-only distribution).
+
+        Needs EGOOWN_VIDEOS_ROOT/{video_id}.mp4 and the frame struct's
+        timestamp_sec. Timestamps are treated as absolute in the source
+        video; set EGOOWN_TS_MODE=clip_relative if the parquet stores
+        clip-relative times (then source_video_start_sec is added).
+        Verify visually on a smoke run before real sweeps.
+        """
+        videos_root = os.environ.get("EGOOWN_VIDEOS_ROOT")
+        if not videos_root:
+            return None
+        struct = row.get(tag) if tag in row.index else None
+        ts = None
+        if isinstance(struct, dict):
+            ts = struct.get("timestamp_sec")
+        else:
+            try:
+                ts = struct["timestamp_sec"]
+            except Exception:
+                ts = None
+        video_id = row.get("video_id")
+        if ts is None or not video_id:
+            return None
+        if os.environ.get("EGOOWN_TS_MODE") == "clip_relative":
+            start = row.get("source_video_start_sec")
+            if start is not None and not (isinstance(start, float) and np.isnan(start)):
+                ts = float(start) + float(ts)
+        video_path = osp.join(videos_root, f"{video_id}.mp4")
+        if not osp.exists(video_path):
+            return None
+        cache = osp.join(LMUDataRoot(), "egoown_recon")
+        os.makedirs(cache, exist_ok=True)
+        safe_id = str(row["index"]).replace("/", "_").replace("#", "__")
+        dest = osp.join(cache, f"{safe_id}__{tag}.jpg")
+        if not osp.exists(dest):
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-ss", f"{max(0.0, float(ts)):.3f}", "-i", video_path,
+                 "-frames:v", "1", "-q:v", "2", "-y", dest],
+                check=False,
+            )
+        return dest if osp.exists(dest) else None
 
     # ---- clip mode helpers ----
 
@@ -403,17 +451,18 @@ class EgoOwnershipBench(ImageBaseDataset):
             path_by_rel = {r: p for r, p in resolved if p}
 
             paths_per_row, missing = [], defaultdict(int)
-            for row_rels in rels_per_row:
+            for i, row_rels in enumerate(rels_per_row):
                 row_paths = []
-                for rel in row_rels:
-                    if rel is None:
-                        missing["no_rel"] += 1
-                        continue
-                    p = path_by_rel.get(rel)
+                for tag, rel in zip(tags, row_rels):
+                    p = path_by_rel.get(rel) if rel else None
+                    if p is None:
+                        # Metadata-only rows (Ego4D: license forbids frame
+                        # redistribution) → reconstruct from the source video.
+                        p = self._reconstruct_frame(df.iloc[i], tag)
                     if p:
                         row_paths.append(p)
                     else:
-                        missing["no_file"] += 1
+                        missing["no_rel" if rel is None else "no_file"] += 1
                 paths_per_row.append(row_paths)
             df["image_path"] = paths_per_row
             want = len(tags)
@@ -423,6 +472,22 @@ class EgoOwnershipBench(ImageBaseDataset):
                 f"({want} frame(s) each); missing rel={missing['no_rel']} "
                 f"file={missing['no_file']}"
             )
+
+            # Guard against silent text-only contamination: in visual modes a
+            # row with zero frames must NOT be evaluated as if it were seen.
+            if os.environ.get("EGOOWN_ALLOW_NOIMG") != "1":
+                has_img = df["image_path"].map(len) > 0
+                n_drop = int((~has_img).sum())
+                if n_drop:
+                    by_src = df.loc[~has_img, "source_dataset"].value_counts().to_dict() \
+                        if "source_dataset" in df.columns else {}
+                    print(
+                        f"[EgoOwn:{dataset}] EXCLUDING {n_drop} rows with no "
+                        f"frames in {self.mode} mode {by_src} — set "
+                        f"EGOOWN_VIDEOS_ROOT to reconstruct (Ego4D) or "
+                        f"EGOOWN_ALLOW_NOIMG=1 to force-keep (NOT for real runs)."
+                    )
+                    df = df[has_img].reset_index(drop=True)
         else:
             df["image_path"] = [[] for _ in range(len(df))]
 
