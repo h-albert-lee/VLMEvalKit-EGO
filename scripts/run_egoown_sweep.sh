@@ -15,7 +15,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MODELS="${MODELS:?Set MODELS, e.g. MODELS=\"GPT4o Qwen2.5-VL-7B-Instruct\"}"
-DATASETS="${DATASETS:-EgoOwn_Single EgoOwn EgoOwn_Blind EgoOwn_EgoLife_Single EgoOwn_EgoLife EgoOwn_EgoLife_Blind}"
+DATASETS="${DATASETS:-EgoOwn_Single EgoOwn EgoOwn_Blind}"
 PERMUTE_SEEDS="${PERMUTE_SEEDS:-0}"
 WORK_DIR="${WORK_DIR:-./outputs}"
 
