@@ -29,13 +29,21 @@ echo "limit:     ${EGOOWN_LIMIT:-0 (all)}"
 echo "===================="
 
 for seed in ${PERMUTE_SEEDS}; do
+  # CRITICAL: VLMEvalKit names outputs by model×dataset only — different
+  # option seeds MUST get separate work dirs, or --reuse silently rescores
+  # seed-0 predictions against a reshuffled answer key (= chance accuracy).
+  if [ "${seed}" = "0" ]; then
+    seed_dir="${WORK_DIR}"
+  else
+    seed_dir="${WORK_DIR}/optseed${seed}"
+  fi
   for model in ${MODELS}; do
     for dataset in ${DATASETS}; do
-      echo ">>> model=${model} dataset=${dataset} opt_seed=${seed}"
+      echo ">>> model=${model} dataset=${dataset} opt_seed=${seed} workdir=${seed_dir}"
       EGOOWN_OPT_SEED="${seed}" python run.py \
         --model "${model}" \
         --data "${dataset}" \
-        --work-dir "${WORK_DIR}" \
+        --work-dir "${seed_dir}" \
         --reuse \
         || { echo "!!! FAILED: ${model} × ${dataset} (seed ${seed}) — continuing"; }
     done
