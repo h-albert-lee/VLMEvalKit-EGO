@@ -108,7 +108,7 @@ def load_items(dataset: str):
         _BASE_CONFIGS, _parse_dataset_name, EgoOwnershipBench,
     )
 
-    base, _ = _parse_dataset_name(dataset)
+    base, _, _ = _parse_dataset_name(dataset)  # (base, mode, prompt_style)
     bench = EgoOwnershipBench(base)  # sparse mode: image_path = [t-2, t-1, t]
     df = bench.data
 
