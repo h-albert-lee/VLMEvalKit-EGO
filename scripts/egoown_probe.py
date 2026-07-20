@@ -143,6 +143,7 @@ def load_items(dataset: str):
             "label": row["answer_label"],
             "taxonomy": row.get("taxonomy"),
             "source_dataset": row.get("source_dataset"),
+            "video_id": row.get("video_id"),
         })
     print(f"[probe] {len(items)} items with frame t "
           f"({sum(1 for i in items if i['bbox'])} with bbox)")
@@ -291,10 +292,18 @@ def zeroshot_predict(embedder: Embedder, items, image_feats: np.ndarray) -> list
     return preds
 
 
-def linear_probe_predict(items, feats: np.ndarray, folds: int, seed: int) -> list[str]:
-    """Out-of-fold predictions from a multinomial logistic regression."""
+def linear_probe_predict(
+    items, feats: np.ndarray, folds: int, seed: int, *, group_by_video: bool = False
+) -> list[str]:
+    """Out-of-fold predictions from a multinomial logistic regression.
+
+    ``group_by_video=True`` keeps all clips of one source video in the same
+    fold (StratifiedGroupKFold) — the item-level split lets the probe exploit
+    scene memorization (same kitchen/table in train and test), so the
+    video-grouped number is the defensible one; report both.
+    """
     from sklearn.linear_model import LogisticRegression
-    from sklearn.model_selection import StratifiedKFold
+    from sklearn.model_selection import GroupKFold, StratifiedKFold
 
     y = np.array([it["label"] for it in items])
     preds = np.empty(len(y), dtype=object)
@@ -310,11 +319,32 @@ def linear_probe_predict(items, feats: np.ndarray, folds: int, seed: int) -> lis
     if eff_folds < folds:
         print(f"[probe] reducing folds {folds}->{eff_folds} (min class count)")
 
-    skf = StratifiedKFold(n_splits=eff_folds, shuffle=True, random_state=seed)
-    for tr, te in skf.split(feats, y):
+    if group_by_video:
+        groups = np.array([str(it.get("video_id") or f"solo_{i}")
+                           for i, it in enumerate(items)])
+        n_groups = len(set(groups))
+        eff_folds = min(eff_folds, n_groups)
+        try:
+            from sklearn.model_selection import StratifiedGroupKFold
+            splitter = StratifiedGroupKFold(
+                n_splits=eff_folds, shuffle=True, random_state=seed
+            )
+        except ImportError:
+            print("[probe] StratifiedGroupKFold unavailable — GroupKFold fallback")
+            splitter = GroupKFold(n_splits=eff_folds)
+        split_iter = splitter.split(feats, y, groups=groups)
+    else:
+        skf = StratifiedKFold(n_splits=eff_folds, shuffle=True, random_state=seed)
+        split_iter = skf.split(feats, y)
+
+    for tr, te in split_iter:
         clf = LogisticRegression(max_iter=2000, C=1.0)
         clf.fit(feats[tr], y[tr])
         preds[te] = clf.predict(feats[te])
+
+    # Grouped splits can leave a class absent from a training fold; any item
+    # never predicted (shouldn't happen with out-of-fold cover) is marked.
+    preds = [p if isinstance(p, str) else "UNPREDICTED" for p in preds]
     return list(preds)
 
 
@@ -331,6 +361,9 @@ def main():
     ap.add_argument("--probe", default="both", choices=["zeroshot", "linear", "both"])
     ap.add_argument("--features", default="both", choices=["frame", "crop", "both"],
                     help="linear-probe features: frame t, bbox crop, or concat")
+    ap.add_argument("--cv", default="both", choices=["item", "video", "both"],
+                    help="linear-probe CV split: item-level (optimistic), "
+                         "video-grouped (defensible), or both (report pair)")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--batch-size", type=int, default=32)
@@ -390,11 +423,26 @@ def main():
             feats, feat_desc = crop_feats, "crop"
         else:
             feats, feat_desc = np.concatenate([frame_feats, crop_feats], axis=1), "frame+crop"
-        preds = linear_probe_predict(items, feats, args.folds, args.seed)
-        emit("linear", preds, {
-            "features": feat_desc, "folds": args.folds, "seed": args.seed,
-            "classifier": "LogisticRegression(C=1.0, max_iter=2000), out-of-fold preds",
-        })
+
+        clf_desc = "LogisticRegression(C=1.0, max_iter=2000), out-of-fold preds"
+        if args.cv in ("item", "both"):
+            preds = linear_probe_predict(items, feats, args.folds, args.seed)
+            emit("linear", preds, {
+                "features": feat_desc, "folds": args.folds, "seed": args.seed,
+                "cv": "item-level StratifiedKFold (optimistic: same-video clips "
+                      "can appear in train and test — scene memorization possible)",
+                "classifier": clf_desc,
+            })
+        if args.cv in ("video", "both"):
+            preds = linear_probe_predict(
+                items, feats, args.folds, args.seed, group_by_video=True
+            )
+            emit("linear_groupcv", preds, {
+                "features": feat_desc, "folds": args.folds, "seed": args.seed,
+                "cv": "video-grouped StratifiedGroupKFold (defensible: no video "
+                      "spans train/test — this is the number to headline)",
+                "classifier": clf_desc,
+            })
 
 
 if __name__ == "__main__":
