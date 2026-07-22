@@ -58,6 +58,7 @@ _ABSTAIN = "AMBIGUOUS"
 _MODEL_ALIASES = {
     "clip": "openai/clip-vit-large-patch14",
     "siglip": "google/siglip-so400m-patch14-384",
+    "egovlp": "showlab/EgoVLP-PT-BEST",
 }
 
 # Zero-shot text templates per label; {noun} is substituted with the target
@@ -193,6 +194,63 @@ class Embedder:
             out = self.model.get_text_features(**inputs)
         out = out / out.norm(dim=-1, keepdim=True)
         return out.float().cpu().numpy()
+
+
+class EgoVLPEmbedder:
+    """Frozen EgoVLP (Frozen-in-Time SpaceTimeTransformer) visual encoder as a
+    drop-in feature extractor for the linear probe. Each image is fed as a
+    single-frame (T=1) clip -> 768-d CLS embedding, matching the single-frame
+    input the CLIP/SigLIP embedders receive (fair comparison). Runs in the
+    modern torch env (Blackwell-OK); only the frozen forward pass is used.
+    Requires env EGOVLP_SRC (repo path) and EGOVLP_CKPT (EgoVLP_PT_BEST .pth)."""
+
+    def __init__(self, model_id: str, batch_size: int = 32):
+        import torch
+        import torchvision.transforms as T
+
+        src = os.environ["EGOVLP_SRC"]
+        ckpt = os.environ["EGOVLP_CKPT"]
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from model.video_transformer import SpaceTimeTransformer
+        import torch.nn as nn
+
+        self.torch = torch
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        net = SpaceTimeTransformer(num_frames=16)
+        net.head = nn.Identity()
+        net.pre_logits = nn.Identity()
+        state = torch.load(ckpt, map_location="cpu", weights_only=False)["state_dict"]
+        vm = {k.split("module.video_model.")[1]: v
+              for k, v in state.items() if "module.video_model." in k}
+        missing, unexpected = net.load_state_dict(vm, strict=False)
+        assert not unexpected, f"unexpected keys: {unexpected[:5]}"
+        self.model = net.to(self.device).eval()
+        self.model_id = model_id
+        self.batch_size = batch_size
+        self.tf = T.Compose([
+            T.Resize(224), T.CenterCrop(224), T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+    def embed_images(self, images) -> np.ndarray:
+        import torch
+        feats = []
+        for i in range(0, len(images), self.batch_size):
+            batch = images[i:i + self.batch_size]
+            px = torch.stack([self.tf(im) for im in batch]).to(self.device)  # B,3,224,224
+            px = px.unsqueeze(1)  # B,T=1,3,224,224
+            with torch.inference_mode():
+                out = self.model(px)  # B,768
+            out = out / out.norm(dim=-1, keepdim=True)
+            feats.append(out.float().cpu().numpy())
+            if (i // self.batch_size) % 10 == 0:
+                print(f"  embed {i + len(batch)}/{len(images)}", end="\r")
+        print()
+        return np.concatenate(feats, axis=0)
+
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        raise NotImplementedError("EgoVLP text tower not wired; use --probe linear")
 
 
 def load_images(items, *, crop: bool):
@@ -376,7 +434,10 @@ def main():
     if not items:
         raise SystemExit("[probe] no usable items (missing frames?)")
 
-    embedder = Embedder(model_id, batch_size=args.batch_size)
+    if args.model == "egovlp":
+        embedder = EgoVLPEmbedder(model_id, batch_size=args.batch_size)
+    else:
+        embedder = Embedder(model_id, batch_size=args.batch_size)
 
     print(f"[probe] embedding full frames ({len(items)})...")
     frame_feats = embedder.embed_images(load_images(items, crop=False))

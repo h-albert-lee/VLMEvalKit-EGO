@@ -2095,6 +2095,20 @@ qwen2vl_series = {
         max_pixels=16384 * 28 * 28,
         use_custom_prompt=False,
     ),
+    "Qwen2.5-Omni-3B": partial(
+        vlm.Qwen2VLChat,
+        model_path="Qwen/Qwen2.5-Omni-3B",
+        min_pixels=1280 * 28 * 28,
+        max_pixels=16384 * 28 * 28,
+        use_custom_prompt=False,
+    ),
+    "EgoThinker-v1": partial(
+        vlm.Qwen2VLChat,
+        model_path="hyf015/EgoThinker-v1",
+        min_pixels=1280 * 28 * 28,
+        max_pixels=16384 * 28 * 28,
+        use_custom_prompt=False,
+    ),
     'VLM-R1': partial(
         vlm.VLMR1Chat, 
         model_path='omlab/VLM-R1-Qwen2.5VL-3B-Math-0305', 
@@ -2661,6 +2675,77 @@ nanovlm_series = {
 }
 
 model_groups.append(nanovlm_series)
+
+# --- EgoOwn sweep API models (2026-07-18) ---
+# Model strings + keys are env-driven so no secrets live in the repo.
+# gpt  : OpenAI  (OPENAI_API_KEY)                model=gpt-5.5-mini
+# claude: Anthropic official (ANTHROPIC_API_KEY) model=claude-haiku-4-5-20251001
+# gemini: OpenRouter (OPENROUTER_API_KEY)        model=google/gemini-3.1-flash
+egosweep_series = {
+    "EgoSweep_GPT": partial(
+        api.GPT4V,
+        model=os.environ.get("EGOSWEEP_GPT_MODEL", "gpt-5.5-mini"),
+        img_detail="high", retry=5, verbose=False, max_tokens=2**14, timeout=300,
+    ),
+    # Claude Haiku 4.5 via OpenRouter (normal commercial call). The direct
+    # Anthropic key provided is red-team/bug-bounty-gated → 400 on the EgoOwn
+    # ownership prompt (even text-only); OpenRouter serves it normally.
+    "EgoSweep_Claude": partial(
+        api.GPT4V,
+        model=os.environ.get("EGOSWEEP_CLAUDE_MODEL", "anthropic/claude-haiku-4.5"),
+        key=os.environ.get("OPENROUTER_API_KEY"),
+        api_base="https://openrouter.ai/api/v1/chat/completions",
+        img_detail="high", retry=5, verbose=False, max_tokens=2**14, timeout=300,
+    ),
+    "EgoSweep_Gemini": partial(
+        api.GPT4V,
+        model=os.environ.get("EGOSWEEP_GEMINI_MODEL", "google/gemini-3.1-flash"),
+        key=os.environ.get("OPENROUTER_API_KEY"),
+        api_base="https://openrouter.ai/api/v1/chat/completions",
+        img_detail="high", retry=5, verbose=False, max_tokens=2**14, timeout=300,
+    ),
+    # Qwen2.5-VL-72B via OpenRouter (local sdpa was ~42h/dataset; API instead).
+    "EgoSweep_Qwen72B": partial(
+        api.GPT4V,
+        model=os.environ.get("EGOSWEEP_QWEN72B_MODEL", "qwen/qwen2.5-vl-72b-instruct"),
+        key=os.environ.get("OPENROUTER_API_KEY"),
+        api_base="https://openrouter.ai/api/v1/chat/completions",
+        img_detail="high", retry=5, verbose=False, max_tokens=2**14, timeout=300,
+    ),
+    # Qwen2.5-VL-32B via OpenRouter — paired serving-path validation vs the
+    # local (device_map=auto) 32B run, to judge whether 72B's low OpenRouter
+    # numbers are a serving artifact or a real model characteristic.
+    "EgoSweep_Qwen32B": partial(
+        api.GPT4V,
+        model=os.environ.get("EGOSWEEP_QWEN32B_MODEL", "qwen/qwen2.5-vl-32b-instruct"),
+        key=os.environ.get("OPENROUTER_API_KEY"),
+        api_base="https://openrouter.ai/api/v1/chat/completions",
+        img_detail="high", retry=5, verbose=False, max_tokens=2**14, timeout=300,
+    ),
+    # Qwen2.5-VL-72B served LOCALLY via vLLM (tp=2, bf16) — OpenAI-compatible
+    # endpoint. This is the faithful capability number; API (Parasail/Nebius)
+    # figures are serving-sensitive and kept only as appendix material.
+    "EgoSweep_Qwen72B_Local": partial(
+        api.GPT4V,
+        model=os.environ.get("EGOSWEEP_QWEN72B_LOCAL_MODEL", "Qwen/Qwen2.5-VL-72B-Instruct"),
+        key=os.environ.get("VLLM_API_KEY", "EMPTY"),
+        api_base=os.environ.get("VLLM_API_BASE", "http://localhost:8010/v1/chat/completions"),
+        # max_tokens must stay under vLLM --max-model-len (8192); 16384 was
+        # rejected wholesale ("max_tokens too large"). MCQ answers are short.
+        img_detail="high", retry=5, verbose=False, max_tokens=1024, timeout=600,
+    ),
+    # Qwen2.5-VL-7B served locally via vLLM (tp=1) — used for the §6 Method
+    # (evidence+CoT) run, where CoT generation is too slow via transformers
+    # serial decoding. max_tokens=2048 gives room for the CoT under max-model-len.
+    "EgoSweep_Qwen7B_Local": partial(
+        api.GPT4V,
+        model=os.environ.get("EGOSWEEP_QWEN7B_LOCAL_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct"),
+        key=os.environ.get("VLLM_API_KEY", "EMPTY"),
+        api_base=os.environ.get("VLLM7B_API_BASE", "http://localhost:8011/v1/chat/completions"),
+        img_detail="high", retry=5, verbose=False, max_tokens=2048, timeout=600,
+    ),
+}
+model_groups.append(egosweep_series)
 
 for grp in model_groups:
     supported_VLM.update(grp)

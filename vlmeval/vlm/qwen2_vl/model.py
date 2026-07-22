@@ -262,6 +262,17 @@ class Qwen2VLChat(Qwen2VLPromptMixin, BaseModel):
             MODEL_CLS = Qwen2VLForConditionalGeneration
             self.processor = Qwen2VLProcessor.from_pretrained(self.model_path)
 
+        # Some fine-tuned checkpoints (e.g. EgoThinker-v1) ship a processor without a
+        # chat template, which makes apply_chat_template raise. Fall back to the
+        # tokenizer's template if present, otherwise inject the standard Qwen2-VL one.
+        if getattr(self.processor, 'chat_template', None) is None:
+            tok = getattr(self.processor, 'tokenizer', None)
+            tok_tmpl = getattr(tok, 'chat_template', None) if tok is not None else None
+            self.processor.chat_template = tok_tmpl or CHAT_TEMPLATE
+            logging.warning(
+                'Processor had no chat_template; injected %s Qwen2-VL template.',
+                'tokenizer' if tok_tmpl else 'default')
+
         gpu_mems = get_gpu_memory()
         max_gpu_mem = max(gpu_mems) if gpu_mems != [] else -1
         assert max_gpu_mem > 0
@@ -308,8 +319,14 @@ class Qwen2VLChat(Qwen2VLPromptMixin, BaseModel):
             torch.cuda.set_device(0)
             self.device = 'cuda'
         else:
+            # Graceful fallback: use FlashAttention2 only if installed, else sdpa.
+            try:
+                import flash_attn  # noqa: F401
+                _attn_impl = 'flash_attention_2'
+            except Exception:
+                _attn_impl = 'sdpa'
             self.model = MODEL_CLS.from_pretrained(
-                model_path, torch_dtype='auto', device_map="auto", attn_implementation='flash_attention_2'
+                model_path, torch_dtype='auto', device_map="auto", attn_implementation=_attn_impl
             )
             self.model.eval()
 

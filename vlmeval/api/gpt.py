@@ -293,6 +293,13 @@ class OpenAIWrapper(BaseAPI):
         if stream:
             payload['stream'] = True
 
+        # Optional OpenRouter provider pinning (serving-path isolation).
+        # Set OPENROUTER_PROVIDER=Nebius (etc.) to force a single provider.
+        if 'openrouter.ai' in self.api_base:
+            _prov = os.environ.get('OPENROUTER_PROVIDER')
+            if _prov:
+                payload['provider'] = {'order': [_prov], 'allow_fallbacks': False}
+
         proxies = {}
         if os.getenv('http_proxy'):
             proxies['http'] = os.getenv('http_proxy')
