@@ -67,6 +67,16 @@ _C = {"MINE": "#0072B2", "PERSON_k": "#E69F00", "SHARED": "#009E73",
 
 _PROBE_PAT = re.compile(r"clip|siglip|egovlp|probe", re.IGNORECASE)
 
+# Non-canonical artifacts swept up by egoown_report.py's recursive glob:
+# smoke/exploratory output trees, and nested per-run T<ts> workdir copies whose
+# basename becomes a bogus "model" name. These duplicate or predate the canonical
+# top-level v2 runs and must not become figure bars.
+_JUNK_TREE = re.compile(r"(?:^|/)(?:smoke|smoke_hf|vllm_smoke|vllm_full)/")
+_TWORKDIR = re.compile(r"(?:^|/)T\d{8}-\d{6}/")
+_TNAME = re.compile(r"^T\d{8}-\d{6}$")
+# For probes, the leakage-free grouped-CV linear probe is the paper's headline.
+_PROBE_METRIC = "probe-linear_groupcv"
+
 plt.rcParams.update({
     "pdf.fonttype": 42, "ps.fonttype": 42,
     "font.size": 8, "axes.titlesize": 8.5, "axes.labelsize": 8,
@@ -80,6 +90,19 @@ plt.rcParams.update({
 def _load_report(path: str, dataset: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     df = df[df["dataset"] == dataset].copy()
+    # drop non-canonical rows: smoke/exploratory trees + nested T<ts> run-workdir
+    # copies + their basename-derived pseudo-model rows.
+    sf = df["score_file"].fillna("").astype(str)
+    df = df[~sf.str.contains(_JUNK_TREE) & ~sf.str.contains(_TWORKDIR)]
+    df = df[~df["model"].astype(str).str.match(_TNAME)]
+    # honor the paper's explicit exclusions (e.g. the 72B OpenRouter serving artifact)
+    if "exclude_from_main_table" in df.columns:
+        df = df[df["exclude_from_main_table"] != True]  # noqa: E712
+    # probes emit several metrics (zeroshot / item-CV / grouped-CV); keep only the
+    # leakage-free grouped-CV linear probe so each backbone is a single bar.
+    is_probe = df["model"].astype(str).str.contains(_PROBE_PAT)
+    if "mode" in df.columns:
+        df = df[~is_probe | (df["mode"].astype(str) == _PROBE_METRIC)]
     # seed-0 runs only (permutation sweeps live in optseed workdirs / rows)
     if "opt_seed" in df.columns:
         seed = df["opt_seed"].fillna("").astype(str)
@@ -123,8 +146,11 @@ def _find_acc_csv(outputs: str, model_dir: str, dataset: str) -> str:
 
 
 def _load_confusion(path: str) -> pd.DataFrame:
-    cm = pd.read_csv(path, index_col=0)
-    cm.index = cm.index.astype(str)
+    # acc.csv is a headerless-index square matrix: the header row names the
+    # predicted labels, and the data rows are the GT classes in the SAME order
+    # (no row-label column). Assign the GT index from the column labels.
+    cm = pd.read_csv(path)
+    cm.index = pd.Index([str(c) for c in cm.columns][: len(cm)])
     # GT is never UNPARSED — drop the all-zero row, keep the pred column.
     cm = cm.loc[[l for l in _LABELS if l in cm.index]]
     cols = [c for c in _LABELS + ["UNPARSED"] if c in cm.columns]
@@ -184,8 +210,9 @@ def make_f4(args):
     models = _parse_models(args.models)
     n = len(models)
 
-    fig = plt.figure(figsize=(7.0, 2.1))
-    gs = fig.add_gridspec(1, n + 1, width_ratios=[1.0] * n + [1.35],
+    fig = plt.figure(figsize=(7.6, 2.1))
+    # trailing spacer column keeps panel (b)'s long y-labels off the last heatmap
+    gs = fig.add_gridspec(1, n + 2, width_ratios=[1.0] * n + [0.55, 1.35],
                           wspace=0.32)
 
     # -- (a) confusion heatmaps, row-normalized ---------------------------
@@ -215,7 +242,7 @@ def make_f4(args):
     fig.text(0.02, 0.97, "(a)", fontsize=9, fontweight="bold")
 
     # -- (b) label-collapse: pred_frac stacked bars ------------------------
-    ax = fig.add_subplot(gs[0, n])
+    ax = fig.add_subplot(gs[0, n + 1])
     df = _load_report(args.report, args.dataset)
     df = df[~df["model"].str.contains(_PROBE_PAT)]
     pf_cols = [f"pred_frac:{l}" for l in _LABELS]
