@@ -155,6 +155,52 @@ def load_items(dataset: str):
 # Embedding backends (lazy torch import)
 # ---------------------------------------------------------------------------
 
+class QwenVisionEmbedder:
+    """Frozen vision tower of a Qwen2.5-VL checkpoint (linear probe only).
+
+    The sharpest form of the perception-vs-reasoning dissection: features come
+    from the very encoder the evaluated VLM uses, so 'CLIP is not their
+    encoder' no longer applies. Dynamic-resolution ViT -> per-image forward,
+    mean-pooled merged patches, L2-normalized.
+    """
+
+    def __init__(self, model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct", **_):
+        import torch
+        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+        self.torch = torch
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        full = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_id, torch_dtype=dtype, low_cpu_mem_usage=True,
+        )
+        self.visual = full.visual.to(self.device).eval()
+        del full  # LM/lm_head 메모리 해제 — vision tower만 유지
+        self.processor = AutoProcessor.from_pretrained(model_id)
+        self.model_id = f"{model_id}#vision-tower"
+
+    def embed_images(self, images) -> "np.ndarray":
+        import torch
+        dtype = next(self.visual.parameters()).dtype
+        feats = []
+        for i, img in enumerate(images):
+            inputs = self.processor(images=[img], return_tensors="pt")
+            pv = inputs["pixel_values"].to(self.device, dtype=dtype)
+            thw = inputs["image_grid_thw"].to(self.device)
+            with torch.inference_mode():
+                out = self.visual(pv, grid_thw=thw)  # [n_merged_patches, D]
+            emb = out.float().mean(dim=0)
+            emb = emb / (emb.norm() + 1e-8)
+            feats.append(emb.cpu().numpy())
+            if i % 200 == 0:
+                print(f"  qwen-vit embed {i}/{len(images)}", end="\r")
+        print()
+        return np.stack(feats)
+
+    def embed_texts(self, texts):
+        raise RuntimeError("qwen-vit backend has no text tower — use --probe linear")
+
+
 class Embedder:
     def __init__(self, model_id: str, batch_size: int = 32):
         import torch
@@ -436,6 +482,14 @@ def main():
 
     if args.model == "egovlp":
         embedder = EgoVLPEmbedder(model_id, batch_size=args.batch_size)
+    elif args.model.startswith("qwen-vit"):
+        # Own-encoder probe: the evaluated VLM's OWN frozen vision tower.
+        # Usage: --model qwen-vit  (default 7B)  or  --model qwen-vit:Qwen/Qwen2.5-VL-32B-Instruct
+        ckpt = args.model.split(":", 1)[1] if ":" in args.model else "Qwen/Qwen2.5-VL-7B-Instruct"
+        embedder = QwenVisionEmbedder(ckpt)
+        if args.probe != "linear":
+            print("[probe] qwen-vit has no text tower — forcing --probe linear")
+            args.probe = "linear"
     else:
         embedder = Embedder(model_id, batch_size=args.batch_size)
 
@@ -459,6 +513,12 @@ def main():
     }
 
     def emit(kind: str, preds: list[str], extra: dict):
+        # Per-item predictions for cross-model error analysis (§5.2 확장).
+        pred_path = osp.join(out_root, f"{args.dataset}_probe_{kind}_preds.jsonl")
+        with open(pred_path, "w", encoding="utf-8") as pf:
+            for it, pr in zip(items, preds):
+                pf.write(json.dumps({"index": it["id"], "pred_label": pr,
+                                     "gt_label": it["label"]}) + "\n")
         results, cm = compute_metrics(items, preds)
         results["manifest"] = {**manifest_base, "mode": f"probe-{kind}", **extra}
         base = osp.join(out_root, f"{args.dataset}_probe_{kind}")
