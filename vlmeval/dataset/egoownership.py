@@ -427,6 +427,21 @@ class EgoOwnershipBench(ImageBaseDataset):
             df = df.iloc[:limit].reset_index(drop=True)
             print(f"[EgoOwn:{dataset}] EGOOWN_LIMIT={limit} -> {len(df)} rows")
 
+        # Reproducible taxonomy-stratified subset (thinking-mode / ablation runs).
+        # Proportional per-taxonomy sample, fixed seed -> same items across runs.
+        strat_n = int(os.environ.get("EGOOWN_STRATIFY_N", "0") or 0)
+        if strat_n and strat_n < len(df):
+            strat_seed = int(os.environ.get("EGOOWN_STRATIFY_SEED", "0") or 0)
+            frac = strat_n / len(df)
+            df = (
+                df.groupby("taxonomy", group_keys=False)
+                  .apply(lambda g: g.sample(n=max(1, round(len(g) * frac)),
+                                            random_state=strat_seed))
+                  .reset_index(drop=True)
+            )
+            print(f"[EgoOwn:{dataset}] STRATIFY taxonomy n={len(df)} "
+                  f"(target {strat_n}, seed {strat_seed})")
+
         df["index"] = df["clip_id"].astype(str)
 
         # ---- resolve frames (visual frame modes only) ----
@@ -763,6 +778,11 @@ class EgoOwnershipBench(ImageBaseDataset):
             "eval_code_rev": _git_rev(osp.dirname(osp.dirname(osp.dirname(__file__)))),
             "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "eval_file": osp.basename(str(eval_file)),
+            "n_items": int(len(data)),
+            "stratify_n": int(os.environ.get("EGOOWN_STRATIFY_N", "0") or 0),
+            "stratify_seed": int(os.environ.get("EGOOWN_STRATIFY_SEED", "0") or 0),
+            # free-form note for run config not otherwise captured (e.g. thinking cfg)
+            "run_note": os.environ.get("EGOOWN_RUN_NOTE", ""),
         }
 
         scored_path = get_intermediate_file_path(eval_file, "_scored", "xlsx")

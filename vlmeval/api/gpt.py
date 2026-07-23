@@ -286,7 +286,14 @@ class OpenAIWrapper(BaseAPI):
         if 'gemini' in self.model:
             payload.pop('max_tokens')
             payload.pop('n')
-            payload['reasoning_effort'] = 'high'
+            payload['reasoning_effort'] = os.environ.get('EGOSWEEP_GEMINI_REASONING', 'high')
+
+        # Thinking-mode ablation: override reasoning budget for OpenAI reasoning
+        # models (gpt-5/o-series). Only active when the env var is set, so
+        # default behavior is unchanged. Values: minimal|low|medium|high.
+        _reff = os.environ.get('EGOSWEEP_REASONING_EFFORT')
+        if _reff and self.is_max_completion_tokens:
+            payload['reasoning_effort'] = _reff
 
         if 'openai.com' not in self.api_base and payload.get('n') == 1:
             payload.pop('n', None)
