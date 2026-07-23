@@ -183,8 +183,13 @@ class QwenVisionEmbedder:
         import torch
         dtype = next(self.visual.parameters()).dtype
         feats = []
+        # Use the image_processor sub-component directly: the top-level
+        # Qwen2.5-VL processor.__call__ requires a `text` arg in current
+        # transformers (indexes text[i] -> TypeError on text=None), but for
+        # frozen-tower features we only need pixel_values + image_grid_thw.
+        image_proc = getattr(self.processor, "image_processor", self.processor)
         for i, img in enumerate(images):
-            inputs = self.processor(images=[img], return_tensors="pt")
+            inputs = image_proc(images=[img], return_tensors="pt")
             pv = inputs["pixel_values"].to(self.device, dtype=dtype)
             thw = inputs["image_grid_thw"].to(self.device)
             with torch.inference_mode():
