@@ -402,7 +402,8 @@ def zeroshot_predict(embedder: Embedder, items, image_feats: np.ndarray) -> list
 
 
 def linear_probe_predict(
-    items, feats: np.ndarray, folds: int, seed: int, *, group_by_video: bool = False
+    items, feats: np.ndarray, folds: int, seed: int, *, group_by_video: bool = False,
+    train_frac: float = 1.0, subsample_seed: int = 0,
 ) -> list[str]:
     """Out-of-fold predictions from a multinomial logistic regression.
 
@@ -410,6 +411,10 @@ def linear_probe_predict(
     fold (StratifiedGroupKFold) — the item-level split lets the probe exploit
     scene memorization (same kitchen/table in train and test), so the
     video-grouped number is the defensible one; report both.
+
+    ``train_frac < 1.0`` subsamples each fold's TRAIN indices to that fraction,
+    stratified by label (test fold stays full) — used to trace the probe's
+    sample-efficiency curve. At least one example per class is always kept.
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import GroupKFold, StratifiedKFold
@@ -446,7 +451,17 @@ def linear_probe_predict(
         skf = StratifiedKFold(n_splits=eff_folds, shuffle=True, random_state=seed)
         split_iter = skf.split(feats, y)
 
+    rng = np.random.RandomState(subsample_seed)
     for tr, te in split_iter:
+        tr = np.asarray(tr)
+        if train_frac < 1.0:
+            y_tr = y[tr]
+            keep = []
+            for c in np.unique(y_tr):
+                idx = tr[y_tr == c]
+                n = max(1, int(round(len(idx) * train_frac)))
+                keep.append(rng.choice(idx, size=min(n, len(idx)), replace=False))
+            tr = np.concatenate(keep)
         clf = LogisticRegression(max_iter=2000, C=1.0)
         clf.fit(feats[tr], y[tr])
         preds[te] = clf.predict(feats[te])
@@ -477,6 +492,12 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--out-dir", default="./outputs")
+    ap.add_argument("--train-frac", nargs="+", type=float, default=None,
+                    help="if set, trace sample-efficiency curve: run grouped-CV "
+                         "linear probe with each fraction of the TRAIN fold "
+                         "(stratified), e.g. --train-frac 0.01 0.05 0.1 0.25 1.0")
+    ap.add_argument("--train-frac-repeats", type=int, default=3,
+                    help="subsample-seed repeats averaged per fraction < 1.0")
     args = ap.parse_args()
 
     model_id = _MODEL_ALIASES.get(args.model, args.model)
@@ -532,6 +553,47 @@ def main():
         cm.to_csv(base + "_acc.csv")
         print(f"[probe:{kind}] acc={results['overall_acc']:.3f} "
               f"macroF1={results['macro_f1']:.3f} -> {base}_score.json")
+
+    if args.train_frac:
+        # Sample-efficiency curve (§5.2 rebuttal to the "supervision advantage"
+        # objection): grouped-CV linear probe trained on a stratified fraction
+        # of each train fold; test folds stay full. If a few dozen labels already
+        # beat every zero-shot VLM, the probe's edge is signal linearity, not
+        # supervision volume.
+        if crop_feats is not None:
+            feats = np.concatenate([frame_feats, crop_feats], axis=1); feat_desc = "frame+crop"
+        else:
+            feats = frame_feats; feat_desc = "frame"
+        approx_train = len(items) * (args.folds - 1) / args.folds
+        curve = []
+        for frac in args.train_frac:
+            reps = 1 if frac >= 1.0 else max(1, args.train_frac_repeats)
+            accs, mf1s = [], []
+            for s in range(reps):
+                preds = linear_probe_predict(
+                    items, feats, args.folds, args.seed, group_by_video=True,
+                    train_frac=frac, subsample_seed=s)
+                res, _ = compute_metrics(items, preds)
+                accs.append(res["overall_acc"]); mf1s.append(res["macro_f1"])
+            row = {"train_frac": frac, "repeats": reps,
+                   "approx_train_labels": int(round(approx_train * frac)),
+                   "acc_mean": round(float(np.mean(accs)), 4),
+                   "acc_std": round(float(np.std(accs)), 4),
+                   "macro_f1_mean": round(float(np.mean(mf1s)), 4),
+                   "acc_per_seed": [round(a, 4) for a in accs]}
+            curve.append(row)
+            print(f"[curve] frac={frac:.3f} ~{row['approx_train_labels']} labels "
+                  f"acc={row['acc_mean']:.4f}±{row['acc_std']:.4f} (reps={reps})")
+        out = {"manifest": {**manifest_base, "mode": "probe-sampeff-curve",
+                            "features": feat_desc, "cv": "video-grouped StratifiedGroupKFold",
+                            "folds": args.folds, "cv_seed": args.seed,
+                            "train_frac_repeats": args.train_frac_repeats},
+               "curve": curve}
+        cpath = osp.join(out_root, f"{args.dataset}_probe_sampeff_curve.json")
+        with open(cpath, "w", encoding="utf-8") as fh:
+            json.dump(out, fh, indent=2, default=str)
+        print(f"[curve] -> {cpath}")
+        return
 
     if args.probe in ("zeroshot", "both"):
         # Zero-shot on the most object-specific view available.

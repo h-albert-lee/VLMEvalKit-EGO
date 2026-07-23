@@ -277,6 +277,59 @@ def make_f4(args):
     _save(fig, args.out)
 
 
+# ----------------------------------------------------------------------- F5
+
+def make_sampeff(args):
+    """Probe sample-efficiency curve: grouped-CV accuracy vs #train labels,
+    with the best zero-shot VLM / human / chance reference lines. Shows that a
+    few dozen labels already clear every VLM (the 'supervision advantage'
+    rebuttal)."""
+    import json
+    with open(args.curve) as fh:
+        curve = json.load(fh)["curve"]
+    curve = sorted(curve, key=lambda r: r["approx_train_labels"])
+    x = np.array([r["approx_train_labels"] for r in curve], dtype=float)
+    y = np.array([r["acc_mean"] for r in curve])
+    e = np.array([r.get("acc_std", 0.0) for r in curve])
+
+    fig, ax = plt.subplots(figsize=(3.5, 2.7))
+    ax.set_xscale("log")
+    ax.fill_between(x, y - e, y + e, color=_C["bar"], alpha=0.15, linewidth=0)
+    ax.plot(x, y, "-o", color=_C["bar"], lw=2, ms=6, zorder=5)
+    for xi, yi in zip(x, y):
+        ax.annotate(f"{yi:.2f}", (xi, yi), textcoords="offset points",
+                    xytext=(0, 8), ha="center", fontsize=6.5, color=_C["bar"])
+
+    from matplotlib.transforms import blended_transform_factory
+    tf = blended_transform_factory(ax.transAxes, ax.transData)
+    # reference lines; labels split left/right so none sits under the curve
+    for val, col, lab, xpos, ha in [
+        (args.human, _C["human"], f"human {args.human:.2f}", 0.015, "left"),
+        (args.best_vlm, _C["PERSON_k"],
+         f"{args.best_vlm_label} {args.best_vlm:.2f}", 0.985, "right"),
+        (args.chance, _C["chance"], f"chance {args.chance:.2f}", 0.015, "left"),
+    ]:
+        ax.axhline(val, color=col, ls="--", lw=1.1, zorder=1)
+        ax.text(xpos, val + 0.013, lab, color=col, fontsize=6.5,
+                ha=ha, va="bottom", transform=tf)
+
+    # crossover punchline: smallest budget already clears the best VLM
+    if y[0] > args.best_vlm:
+        ax.annotate(f"≈{int(x[0])} labels\nbeat best VLM", (x[0], y[0]),
+                    textcoords="offset points", xytext=(20, 6), fontsize=6.5,
+                    color=_C["bar"], va="center",
+                    arrowprops=dict(arrowstyle="->", color=_C["bar"], lw=0.8))
+
+    ax.set_xlabel("Labeled training examples (log scale)")
+    ax.set_ylabel("Grouped-CV accuracy")
+    ax.set_title("CLIP frozen-feature probe: sample efficiency", pad=6)
+    ax.set_ylim(0.2, 0.9)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{int(v)}" for v in x])
+    ax.tick_params(axis="x", which="minor", length=0)
+    _save(fig, args.out)
+
+
 # ---------------------------------------------------------------------- CLI
 
 def main():
@@ -308,6 +361,17 @@ def main():
     f4.add_argument("--rename", nargs="*", default=[])
     f4.add_argument("--out", default="figures/fig4_confusion_collapse")
     f4.set_defaults(fn=make_f4)
+
+    f5 = sub.add_parser("sampeff", help="probe sample-efficiency curve")
+    f5.add_argument("--curve",
+                    default="outputs/clip-probe/EgoOwn_probe_sampeff_curve.json")
+    f5.add_argument("--best-vlm", type=float, default=0.544,
+                    help="best zero-shot VLM sparse acc (reference line)")
+    f5.add_argument("--best-vlm-label", default="best zero-shot VLM")
+    f5.add_argument("--human", type=float, default=0.834)
+    f5.add_argument("--chance", type=float, default=0.25)
+    f5.add_argument("--out", default="figures/fig5_sample_efficiency")
+    f5.set_defaults(fn=make_sampeff)
 
     args = p.parse_args()
     args.fn(args)
