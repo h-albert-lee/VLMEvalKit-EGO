@@ -59,11 +59,12 @@ _LABELS = ["MINE", "PERSON_k", "SHARED", "AMBIGUOUS"]
 _DISPLAY = {"MINE": "Mine", "PERSON_k": "Others'", "SHARED": "Shared",
             "AMBIGUOUS": "Ambiguous", "UNPARSED": "Unparsed"}
 
-# Okabe–Ito
+# Label colors: Okabe–Ito (colorblind-safe 4-way distinction — do not swap
+# for brand colors). Accent colors: Meta palette (#0668E1/#0080FB/#1C2B33).
 _C = {"MINE": "#0072B2", "PERSON_k": "#E69F00", "SHARED": "#009E73",
       "AMBIGUOUS": "#CC79A7", "UNPARSED": "#999999",
-      "bar": "#0072B2", "probe": "#56B4E9", "human": "#D55E00",
-      "chance": "#666666"}
+      "bar": "#0668E1", "probe": "#0080FB", "human": "#D55E00",
+      "chance": "#1C2B33"}
 
 _PROBE_PAT = re.compile(r"clip|siglip|egovlp|probe", re.IGNORECASE)
 
@@ -77,12 +78,29 @@ _TNAME = re.compile(r"^T\d{8}-\d{6}$")
 # For probes, the leakage-free grouped-CV linear probe is the paper's headline.
 _PROBE_METRIC = "probe-linear_groupcv"
 
+def _register_font(name: str = "Aptos") -> None:
+    """Register TTF/OTF files from scripts/fonts/ (if present) and select
+    `name` with silent fallback to the matplotlib default."""
+    import matplotlib.font_manager as fm
+    fdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    if os.path.isdir(fdir):
+        for f in glob(os.path.join(fdir, "*.[ot]tf")):
+            fm.fontManager.addfont(f)
+    available = {f.name for f in fm.fontManager.ttflist}
+    if name in available:
+        plt.rcParams["font.family"] = name
+    else:
+        print(f"[warn] font '{name}' not found — using default "
+              f"(drop TTFs into {fdir} to enable)")
+
+
 plt.rcParams.update({
     "pdf.fonttype": 42, "ps.fonttype": 42,
     "font.size": 8, "axes.titlesize": 8.5, "axes.labelsize": 8,
     "xtick.labelsize": 7, "ytick.labelsize": 7, "legend.fontsize": 7,
     "axes.spines.top": False, "axes.spines.right": False,
 })
+_register_font("Aptos")
 
 
 # ------------------------------------------------------------------ helpers
