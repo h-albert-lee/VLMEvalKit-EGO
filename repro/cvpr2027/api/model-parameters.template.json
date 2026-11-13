@@ -1,0 +1,69 @@
+{
+  "execution_enabled": false,
+  "budget_approved": false,
+  "cap_usd": null,
+  "conditions": [
+    "single",
+    "sparse"
+  ],
+  "models": [
+    {
+      "key": "fable",
+      "id": "anthropic/claude-fable-5.1",
+      "canonical_slug": "anthropic/claude-fable-5.1-20260831",
+      "provider": "anthropic",
+      "expected_provider": "Anthropic",
+      "params": {
+        "model": "anthropic/claude-fable-5.1",
+        "max_tokens": 4096,
+        "reasoning": {
+          "effort": "medium"
+        },
+        "provider": {
+          "only": [
+            "anthropic"
+          ],
+          "allow_fallbacks": false,
+          "require_parameters": true,
+          "data_collection": "deny",
+          "max_price": {
+            "prompt": 10,
+            "completion": 50
+          }
+        },
+        "stream": false,
+        "service_tier": "default"
+      },
+      "request_timeout_seconds": 600
+    },
+    {
+      "key": "astra",
+      "id": "openai/gpt-6-astra",
+      "canonical_slug": "openai/gpt-6-astra-20260903",
+      "provider": "openai",
+      "expected_provider": "OpenAI",
+      "params": {
+        "model": "openai/gpt-6-astra",
+        "max_tokens": 4096,
+        "reasoning": {
+          "effort": "medium"
+        },
+        "provider": {
+          "only": [
+            "openai"
+          ],
+          "allow_fallbacks": false,
+          "require_parameters": true,
+          "data_collection": "deny",
+          "max_price": {
+            "prompt": 10,
+            "completion": 50
+          }
+        },
+        "stream": false,
+        "service_tier": "default"
+      },
+      "request_timeout_seconds": 600
+    }
+  ]
+}

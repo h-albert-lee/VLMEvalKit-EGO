@@ -1,0 +1,30 @@
+[
+  {
+    "output": "selection.py",
+    "sha256": "71a6fb94436f6e64d50473456aa2fd728080d721654b7ff7f41db287e737089f",
+    "source": "20261113-supplement-controls/prepare.py",
+    "source_sha256": "aed00baba49c4746c53aae5d89ae096dcbb0394a3bb35b70a53da17e205c0a73",
+    "changes": "Extracted sha/group/rank/select_cohort unchanged; omitted private assembly, IDs, assets and authorization."
+  },
+  {
+    "output": "analysis.py",
+    "sha256": "403014f16426c8106f81f04b102a93562a32432cc620bdc606d5635a77ac2c4c",
+    "source": "20261113-supplement-controls/runner.py",
+    "source_sha256": "7ba90b226bbc8caadad211e4a7103fcdf0f5373ca14cfb93d026c3bc358729c8",
+    "changes": "Extracted outcome/paired_summary unchanged; omitted execution/collection."
+  },
+  {
+    "output": "input_variants.py",
+    "sha256": "bf1b3cf8599e54dbe9077427fe1020b8750c179ddd4dbc8d296ba0f38ff8bb22",
+    "source": "20261113-supplement-controls/prepare.py",
+    "source_sha256": "aed00baba49c4746c53aae5d89ae096dcbb0394a3bb35b70a53da17e205c0a73",
+    "changes": "New thin wrapper of nested derive and exact intervention strings; no asset materialization or dispatch."
+  },
+  {
+    "output": "test_controls.py",
+    "sha256": "a1b6fadf57a910ac0f54da28396be950e32ee7c864f4f1266fb788ed7f24d15c",
+    "source": "20261113-supplement-controls/test_runner.py",
+    "source_sha256": "5551c4ecb93a684df3c77bf2b334b51b265b8db954e37d9497118798bddafad6",
+    "changes": "Ported three synthetic offline tests; omitted private-bundle-dependent tests; added synthetic input/selection checks."
+  }
+]

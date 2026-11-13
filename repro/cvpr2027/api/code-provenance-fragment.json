@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "scope": "source-only portable core; execution and budget not authorized",
+  "entries": [
+    {
+      "output_path": "api_runner.py",
+      "source_path_relative_to_data_work": "20261109-api-frontier/api_runner.py",
+      "source_sha256": "4d27519b5aedf99fc082cb8e5a2d0b6fd009e4f48822d48c5563a55fb4a7c03f",
+      "output_sha256": "9bc74218b597b1d87e4a24c965fe210178c31cdcd262c83a5b16fa02b11917df",
+      "modifications": [
+        "Extracted pure payload, response, pilot, and local-log functions; excluded Runner, CLI, credentials, live HTTP request and deployment/checkpoint orchestration.",
+        "infer accepts an explicit transport keyword; default transport is disabled. Preserved original response/parser/generation semantics.",
+        "Imports shared egoown_cvpr from repository root; removed private code-directory import."
+      ]
+    },
+    {
+      "output_path": "test_api_runner.py",
+      "source_path_relative_to_data_work": "20261109-api-frontier/test_api_runner.py",
+      "source_sha256": "d21e0c6961f0d16fa422492ca26573eef97b6145abf2f47048c28e26921277fd",
+      "output_sha256": "7eef4236681a255bfcb9bd4b0d4e48a216dcbd1a32d159dfd85b5e2edf6fa180",
+      "modifications": [
+        "Removed two tests for excluded Runner budget/account code; retained nine synthetic-fixture tests.",
+        "Adjusted imports and mock targets for package execution."
+      ]
+    },
+    {
+      "output_path": "__init__.py",
+      "source_path_relative_to_data_work": null,
+      "source_sha256": null,
+      "output_sha256": "e1bcaa2b8856b765a8781fafb66b30335d6c59d8895f80526bfa053565eba0f7",
+      "modifications": [
+        "New package marker."
+      ]
+    },
+    {
+      "output_path": "model-parameters.template.json",
+      "source_path_relative_to_data_work": "20261109-api-frontier/config.json",
+      "source_sha256": "1516185f925ae6fba894dc9107aab6bdc2066b14e89f18d8359bb10e63e1c1c4",
+      "output_sha256": "94ecd5dda562f8dc3eac418e72f5a02ea6f2a2f79d37a11a59254d95bd9ab365",
+      "modifications": [
+        "Allowlisted public model/provider/generation settings only; removed suite ID, paths, source hashes, repository, pricing and prior budget.",
+        "Execution disabled, budget unapproved and cap null; this is not a runnable config."
+      ]
+    },
+    {
+      "output_path": "README.md",
+      "source_path_relative_to_data_work": null,
+      "source_sha256": null,
+      "output_sha256": "8042e794ea7dd5d87d82efd288d0292f2a2701478b1120663f17b6e2f47eae4d",
+      "modifications": [
+        "New release README documenting limited scope, contracts, exclusions and offline tests."
+      ]
+    }
+  ],
+  "self_hash_policy": "This fragment does not include its own recursive hash."
+}

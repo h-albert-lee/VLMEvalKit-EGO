@@ -407,6 +407,14 @@ class EgoOwnershipBench(ImageBaseDataset):
         return paths, None
 
     def _prepare(self, dataset: str) -> pd.DataFrame:
+        # CVPR uses a fully validated frozen bundle and designated-target overlays.
+        # Historical parquet mode remains available only for reproducing old runs.
+        bundle = os.environ.get("EGOOWN_CVPR_BUNDLE")
+        if bundle:
+            if self.mode not in ("sparse", "single") or self.prompt_style != "base":
+                raise ValueError("CVPR bundle adapter supports base sparse/single; use egoown_cvpr.run for ablations")
+            from egoown_cvpr.adapter import prepare
+            return prepare(bundle, self.mode, self.opt_seed)
         parquet_path = self._download_parquet(self._parquet_filename)
         df = pd.read_parquet(parquet_path)
 
@@ -557,6 +565,10 @@ class EgoOwnershipBench(ImageBaseDataset):
     def build_prompt(self, line):
         if isinstance(line, int):
             line = self.data.iloc[line]
+
+        if "cvpr_prompt" in line:
+            return ([dict(type="image", value=p) for p in self.dump_image(line)]
+                    + [dict(type="text", value=line["cvpr_prompt"])])
 
         mp4_path = None
         if self.mode == "blind":
@@ -768,8 +780,13 @@ class EgoOwnershipBench(ImageBaseDataset):
             "base_config": self._base_config,
             "mode": self.mode,
             "prompt_version": (
+                "cvpr-20261105-target-overlay-v1" if os.environ.get("EGOOWN_CVPR_BUNDLE") else
                 PROMPT_VERSION if self.prompt_style == "base"
                 else f"{PROMPT_VERSION}+{self.prompt_style}-v1"
+            ),
+            "frozen_manifest_sha256": (
+                self.data["manifest_sha256"].iloc[0]
+                if "manifest_sha256" in self.data else None
             ),
             "prompt_style": self.prompt_style,
             "opt_seed": self.opt_seed,

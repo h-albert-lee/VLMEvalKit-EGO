@@ -1,0 +1,20 @@
+# Runtime inputs and outputs are deliberately not part of this source release.
+.env*
+.*token*
+.*key*
+*.pem
+*.key
+__pycache__/
+*.py[cod]
+data/
+assets/
+weights/
+runtime/
+results/
+analysis/
+private/
+*.jsonl
+*.parquet
+*.arrow
+*.sqlite*
+*.log

@@ -1,0 +1,104 @@
+{
+  "format_version": 1,
+  "scope": "source-only portable core; execution and budget not authorized",
+  "entries": [
+    {
+      "output_path": "__init__.py",
+      "source_path_relative_to_data_work": null,
+      "source_sha256": null,
+      "output_sha256": "e1bcaa2b8856b765a8781fafb66b30335d6c59d8895f80526bfa053565eba0f7",
+      "modifications": [
+        "New package marker."
+      ]
+    },
+    {
+      "output_path": "protocol.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/protocol.py",
+      "source_sha256": "145ccf1743bf202696f27d25e7ee5ae37ccdae6645d5abcc3ea1a876895747db",
+      "output_sha256": "a7fea0125f984d13c7fb78d740745000c9fffe658a1356452955cb46c7a1b754",
+      "modifications": [
+        "Removed private vendor path; import repository-root egoown_cvpr.",
+        "Require explicit suite root for freeze verification; core hashing/parser rules unchanged."
+      ]
+    },
+    {
+      "output_path": "api_backend.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/api_backend.py",
+      "source_sha256": "eae2b6809c603e62f7908c8ee8d9429164db794505125352fae6ad79e7b870e7",
+      "output_sha256": "0caeac85ee28306343452e130efb57c579cb9aa0117a5b476981011736fef1da",
+      "modifications": [
+        "Extracted make_body and classify_receipt unchanged; omitted HTTP transport, credential reading, key limits and receipt writer.",
+        "Package-relative protocol import."
+      ]
+    },
+    {
+      "output_path": "gpu_backend.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/gpu_backend.py",
+      "source_sha256": "bfabf9b131f00124d699a8aa1b556ee117fd8cb71a4456d73a8615bf875f76f0",
+      "output_sha256": "fa16f8c9eb3e3fa9be1cff24e67f52fe72ad2cf60ce67211291cf66ba0254932",
+      "modifications": [
+        "Retained pinned model/revision/parameters, image validation and encode_request unchanged.",
+        "Excluded model loading/inference class, hard-coded GPU allocation and cache setup; no GPU execution provided."
+      ]
+    },
+    {
+      "output_path": "run.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/run.py",
+      "source_sha256": "0cebbd654dceddfade564ed76915b260d14e87bc47ececece0b393e7ea66b00c",
+      "output_sha256": "fb6f3f10235eedbc4681af141d45dd14ad614073dce4ee531e3b07b41698c65f",
+      "modifications": [
+        "Extracted Ledger, checkpoint and combine unchanged.",
+        "Omitted CLI, GPU/server readiness, API dispatch and budget/credential orchestration; package-relative imports."
+      ]
+    },
+    {
+      "output_path": "analyze.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/analyze.py",
+      "source_sha256": "b87c95c39f3a37f316b5aae5bdd28b740894c2ae6d6a232f86a890bbe7b2bd4e",
+      "output_sha256": "a9ff4f1fb944d32b918739d349ba7ac38fe0f24262774cd2b685940f443d33cf",
+      "modifications": [
+        "Require explicit suite root; removed default-root CLI.",
+        "Package-relative imports; original scoring/parser behavior unchanged."
+      ]
+    },
+    {
+      "output_path": "messages.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/prepare.py",
+      "source_sha256": "74ad0b57cbeffa1e64c44ce72d2083277d35ce7828e321c56c8dee51378411e1",
+      "output_sha256": "3bea966d47f7a3a85572c2290921afaa5e514c2f39d29e75a3ff97c0e5b87951",
+      "modifications": [
+        "Extracted ordered_content and make_request unchanged, plus VARIANTS constant.",
+        "Excluded private manifest/demo discovery, review provenance and original suite preparation.",
+        "Caller must supply validated fixed demos, baseline prompt and exact removable rule block."
+      ]
+    },
+    {
+      "output_path": "test_gpu_backend.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/test_gpu_backend.py",
+      "source_sha256": "f9c30a5f394f4c928ccb86c67a1fdc55c50387d0fbe918371f9f361f2524dbef",
+      "output_sha256": "eff617e19bc7f6640e2da992ab1cd46b2e724665c360f734ce0a78121f436803",
+      "modifications": [
+        "Only package-relative import changes; synthetic tests otherwise unchanged."
+      ]
+    },
+    {
+      "output_path": "test_runtime.py",
+      "source_path_relative_to_data_work": "20261111-label-adaptation/test_runtime.py",
+      "source_sha256": "8ae71b7e2d718b1f8f128ea563a58c4f898cc3a5573d93fa5c466c34f6634136",
+      "output_sha256": "713bfff1a796423efd0ae958cced1c839f1e35ab3f4cbf66a96ca2aa3278189f",
+      "modifications": [
+        "Only package-relative import changes; synthetic tests otherwise unchanged."
+      ]
+    },
+    {
+      "output_path": "README.md",
+      "source_path_relative_to_data_work": null,
+      "source_sha256": null,
+      "output_sha256": "c3e96b8bae0b4e0af70b4c9dd5e2e13b6c17d9303f13f50d3593a08f96cc1293",
+      "modifications": [
+        "New release README documenting required contracts, excluded execution, provenance and offline tests."
+      ]
+    }
+  ],
+  "self_hash_policy": "This fragment does not include its own recursive hash."
+}

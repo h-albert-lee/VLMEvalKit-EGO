@@ -1,0 +1,96 @@
+{
+  "release_scope": "code_only",
+  "historical_fixed_package_sha256": "b6b605179323976fc371dfdb9393ec87cd054eb5670ee7d9f0a98dd093b7a0c7",
+  "historical_package_hash_algorithm": "SHA256(concat(sorted_python_file_name + file_bytes))",
+  "fixed_modules": [
+    {
+      "path": "egoown_cvpr/__init__.py",
+      "sha256": "30f83ad256eb7c02eb9ee68e746feb4e347284379c743874b964ccf60ddc3681",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/adapter.py",
+      "sha256": "80ec9969243476f8ee36928d88dae508f04a2502d318c769796e6a56f3c539ef",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/analyze.py",
+      "sha256": "6637b412e0cd0e6e69667cfc01c778ab0b133bc44fd52d3f073b3f046d5f497f",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/baselines.py",
+      "sha256": "be5d492e083b89336e914a135d18f78d2850067c881a7e6923cc40b8040405d6",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/core.py",
+      "sha256": "9d02cecc2f0575ec3406a01f04c2f02610e00bdfdbad97b50668e67ca6c09987",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/freeze.py",
+      "sha256": "8e2774c986eeec5ea7b6c2041fe5b75ad07dad83af4bd9a29961ed008d62dcab",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/hub.py",
+      "sha256": "18eca15627d334eb74997dae72049e4bef3e015f7a9f82e3b94940fda88ba894",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/modeling.py",
+      "sha256": "e60a1fa3620f0f46cece8382acd22db70e5b92822d417544b5403bcaf0f4ec82",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/preflight.py",
+      "sha256": "294aa3a8951472278fb6246a29aee531657d177d78ce0c0861ed165253a210e5",
+      "status": "unchanged_frozen_source"
+    },
+    {
+      "path": "egoown_cvpr/run.py",
+      "sha256": "c5eb6f28b9d8504ba72a3c38f9273bb2d6d2ce59cb5f514ceca8390d3fe39f02",
+      "status": "unchanged_frozen_source"
+    }
+  ],
+  "portable_component_manifests": {
+    "api": {
+      "path": "repro/cvpr2027/api/code-provenance-fragment.json",
+      "sha256": "80ed40d0f667a0bb362736f5bcbb35c3ce8cdb9c94e666dd6ae76d60857b42e3"
+    },
+    "label_adaptation": {
+      "path": "repro/cvpr2027/label_adaptation/code-provenance-fragment.json",
+      "sha256": "f8eff27c29c52afb89d084ebeec01a34c741e8bb21106707423913f7a9c6b629"
+    },
+    "controls": {
+      "path": "repro/cvpr2027/controls/code-provenance-fragment.json",
+      "sha256": "92f84074e96deda9880059d1671261768e8e4f55f0086157863d62b97a52d985"
+    }
+  },
+  "portable_components_are_original_full_runners": false,
+  "excluded": [
+    "licensed inputs and sample manifests",
+    "raw responses and request/billing ledgers",
+    "human review records",
+    "credentials and private paths",
+    "server/deployment/account/key-management scripts",
+    "private-data-dependent integration tests",
+    "contributed S4 extractor whose implementation is not supplied"
+  ],
+  "config_sources": {
+    "configs/open-models.json": {
+      "source": "20261105-eval-prep/models.json",
+      "changes": "Retained only public model identity/revision/architecture/loader fields; omitted resource estimates."
+    },
+    "configs/protocol-reference.json": {
+      "source": "20261111-label-adaptation final manifest hashes and 20261112-paper-tables cohort audit",
+      "changes": "Aggregate counts and hashes only; no records or IDs; execution disabled."
+    }
+  },
+  "notes": [
+    "Private source locations are represented by source-relative labels only.",
+    "Fixed source modules are unchanged; portability wrappers and tests are separately identified.",
+    "No API/GPU invocation was used to prepare or validate this release."
+  ]
+}

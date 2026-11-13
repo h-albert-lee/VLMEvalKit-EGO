@@ -1,0 +1,26 @@
+{
+  "execution_enabled": false,
+  "new_paid_budget_authorized": false,
+  "seed": 0,
+  "do_sample": false,
+  "max_new_tokens": 256,
+  "thinking": false,
+  "dtype": "bfloat16",
+  "frozen_code_sha256": "b6b605179323976fc371dfdb9393ec87cd054eb5670ee7d9f0a98dd093b7a0c7",
+  "scoring_cohorts": {
+    "full": 5189,
+    "common_panel": 189
+  },
+  "historical_input_cohorts": {
+    "initial_open": 5716,
+    "revised_open_and_small_api": 5454,
+    "frontier_panel": 200
+  },
+  "final_manifest_sha256": "280663c21d07c3ff74d6775173ae130a121d348ee51101bb3e8a2eaf392a34e8",
+  "panel_manifest_sha256": "9a1fb3696d363f3e3ca355b6a7fc26930722b2bb63cd74845aa28ffb91346db1",
+  "later_target_name_revisions": {
+    "full": 196,
+    "common_panel": 4
+  },
+  "note": "Provenance/configuration reference only; no dataset, evaluation authorization, or licensed input assets are included."
+}
